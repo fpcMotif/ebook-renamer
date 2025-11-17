@@ -1,0 +1,130 @@
+use clap::Parser;
+use std::path::PathBuf;
+
+#[derive(Parser, Debug)]
+#[command(
+    name = "ebook-renamer",
+    about = "Batch rename and organize downloaded books and arXiv files",
+    version = "0.1.0"
+)]
+pub struct Args {
+    /// Target directory to scan and rename
+    #[arg(
+        value_name = "PATH",
+        default_value = ".",
+        help = "Directory to process (defaults to current directory)"
+    )]
+    pub path: PathBuf,
+
+    /// Only show what would be done, don't make changes
+    #[arg(
+        long,
+        short = 'd',
+        help = "Perform dry run: show changes without applying them (Note: todo.md is always written, even in dry-run mode)"
+    )]
+    pub dry_run: bool,
+
+    /// Maximum recursion depth (default: unlimited)
+    #[arg(
+        long,
+        value_name = "DEPTH",
+        default_value = "18446744073709551615",
+        help = "Maximum directory depth to traverse (default: unlimited)"
+    )]
+    pub max_depth: usize,
+
+    /// Disable recursive scanning, only process top-level directory
+    #[arg(
+        long,
+        help = "Only scan the top-level directory, no recursion"
+    )]
+    pub no_recursive: bool,
+
+    /// Custom file extensions to process
+    #[arg(
+        long,
+        value_name = "EXT1,EXT2",
+        help = "Comma-separated extensions to process (default: pdf,epub,txt)"
+    )]
+    pub extensions: Option<String>,
+
+    /// Don't delete duplicate files, only report
+    #[arg(
+        long,
+        help = "Don't delete duplicates, only list them"
+    )]
+    pub no_delete: bool,
+
+    /// Custom path for todo.md
+    #[arg(
+        long,
+        value_name = "PATH",
+        help = "Path to write todo.md (default: <target-dir>/todo.md)"
+    )]
+    pub todo_file: Option<PathBuf>,
+
+    /// Path for detailed operation log
+    #[arg(
+        long,
+        value_name = "PATH",
+        help = "Optional path to write detailed operation log"
+    )]
+    pub log_file: Option<PathBuf>,
+
+    /// Preserve non-Latin character titles as-is
+    #[arg(
+        long,
+        help = "Preserve original non-Latin script (CJK, etc.) without modification"
+    )]
+    pub preserve_unicode: bool,
+
+    /// Fetch arXiv metadata (placeholder for future implementation)
+    #[arg(
+        long,
+        help = "Fetch arXiv metadata via API (not implemented yet)"
+    )]
+    pub fetch_arxiv: bool,
+
+    /// Verbose output
+    #[arg(long, short = 'v', help = "Enable verbose logging")]
+    pub verbose: bool,
+
+    /// Automatically delete small/corrupted files (< 1KB)
+    #[arg(
+        long,
+        help = "Delete small/corrupted files (< 1KB) instead of adding to todo list"
+    )]
+    pub delete_small: bool,
+
+    /// Output results in JSON format (for testing)
+    #[arg(
+        long,
+        help = "Output operations in JSON format instead of human-readable text"
+    )]
+    pub json: bool,
+
+    /// Skip MD5 hash computation (for cloud storage to avoid downloading files)
+    #[arg(
+        long,
+        help = "Skip MD5 hash computation for duplicate detection (useful for cloud storage like Dropbox to avoid triggering file downloads)"
+    )]
+    pub skip_cloud_hash: bool,
+}
+
+impl Args {
+    #[allow(dead_code)]
+    pub fn get_extensions(&self) -> Vec<String> {
+        if let Some(ref exts) = self.extensions {
+            exts.split(',')
+                .map(|s| format!(".{}", s.trim().trim_start_matches('.')))
+                .collect()
+        } else {
+            vec![
+                ".pdf".to_string(),
+                ".epub".to_string(),
+                ".txt".to_string(),
+            ]
+        }
+    }
+}
+

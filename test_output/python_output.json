@@ -1,0 +1,42 @@
+{
+  "renames": [],
+  "duplicate_deletes": [],
+  "small_or_corrupted_deletes": [],
+  "todo_items": [
+    {
+      "category": "failed_download",
+      "file": "noise_1_Jane Doe - Mathematics Fundamentals (2021).download",
+      "message": "重新下载: noise_1_Jane Doe - Mathematics Fundamentals (2021).download (未完成下载)"
+    },
+    {
+      "category": "too_small",
+      "file": "Copy_1_Jane Doe - Mathematics Fundamentals (2021).pdf",
+      "message": "检查并重新下载: Copy_1_Jane Doe - Mathematics Fundamentals (2021).pdf (文件过小，仅 475 字节)"
+    },
+    {
+      "category": "too_small",
+      "file": "Copy_2_Jane Doe - Mathematics Fundamentals (2021).pdf",
+      "message": "检查并重新下载: Copy_2_Jane Doe - Mathematics Fundamentals (2021).pdf (文件过小，仅 475 字节)"
+    },
+    {
+      "category": "too_small",
+      "file": "corrupted_Jane Doe - Mathematics Fundamentals (2021).pdf",
+      "message": "检查并重新下载: corrupted_Jane Doe - Mathematics Fundamentals (2021).pdf (文件过小，仅 30 字节)"
+    },
+    {
+      "category": "too_small",
+      "file": "noise_2_Jane Doe - London Mathematical Society Lecture Note Series Mathematics Fundamentals (2021).pdf",
+      "message": "检查并重新下载: noise_2_Jane Doe - London Mathematical Society Lecture Note Series Mathematics Fundamentals (2021).pdf (文件过小，仅 475 字节)"
+    },
+    {
+      "category": "too_small",
+      "file": "noise_3_Jane Doe - Mathematics Fundamentals (2021).pdf",
+      "message": "检查并重新下载: noise_3_Jane Doe - Mathematics Fundamentals (2021).pdf (文件过小，仅 475 字节)"
+    },
+    {
+      "category": "too_small",
+      "file": "small_Jane Doe - Mathematics Fundamentals (2021).pdf",
+      "message": "检查并重新下载: small_Jane Doe - Mathematics Fundamentals (2021).pdf (文件过小，仅 100 字节)"
+    }
+  ]
+}

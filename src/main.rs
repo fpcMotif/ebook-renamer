@@ -4,11 +4,14 @@ mod duplicates;
 mod todo;
 mod cli;
 mod json_output;
+mod download_recovery;
 
 use anyhow::Result;
 use clap::Parser;
 use cli::Args;
 use log::info;
+use download_recovery::DownloadRecovery;
+use colored::*;
 
 fn main() -> Result<()> {
     env_logger::Builder::from_default_env()
@@ -20,7 +23,33 @@ fn main() -> Result<()> {
 
     // Handle --fetch-arxiv placeholder
     if args.fetch_arxiv {
-        println!("⚠️  Warning: --fetch-arxiv is not implemented yet. Files will be processed offline only.");
+        println!("{} {}", 
+            "⚠️  Warning:".yellow().bold(),
+            "--fetch-arxiv is not implemented yet. Files will be processed offline only.".yellow()
+        );
+    }
+
+    // Step 1: Recover downloads from .download/.crdownload folders
+    let recovery = DownloadRecovery::new(&args.path, args.cleanup_downloads);
+    let recovery_result = recovery.recover_downloads()?;
+    
+    if !recovery_result.extracted_files.is_empty() {
+        info!("Recovered {} PDFs from download folders", recovery_result.extracted_files.len());
+        if args.dry_run && !args.json {
+            println!("{} Recovered {} PDFs from download folders", 
+                "✓".green().bold(),
+                recovery_result.extracted_files.len().to_string().cyan()
+            );
+        }
+    }
+    
+    if !recovery_result.errors.is_empty() {
+        info!("Encountered {} errors during download recovery", recovery_result.errors.len());
+        if args.dry_run && !args.json {
+            for error in &recovery_result.errors {
+                println!("{}  {}", "⚠️".yellow(), error.yellow());
+            }
+        }
     }
 
     // Handle --no-recursive by setting max_depth to 1
@@ -84,38 +113,66 @@ fn main() -> Result<()> {
             )?;
             println!("{}", operations.to_json()?);
         } else {
-            // Human-readable output
-            println!("\n=== DRY RUN MODE ===");
-            for file_info in &clean_files {
-                if let Some(ref new_name) = file_info.new_name {
-                    println!("RENAME: {} -> {}", file_info.original_name, new_name);
+            // Human-readable output with rich text
+            println!("\n{}", "═══ DRY RUN MODE ═══".bold().bright_blue());
+            
+            if !clean_files.is_empty() {
+                let mut rename_count = 0;
+                for file_info in &clean_files {
+                    if let Some(ref new_name) = file_info.new_name {
+                        println!("{} {} {} {}", 
+                            "RENAME:".green().bold(),
+                            file_info.original_name.bright_white(),
+                            "→".bright_blue().bold(),
+                            new_name.bright_cyan()
+                        );
+                        rename_count += 1;
+                    }
+                }
+                if rename_count > 0 {
+                    println!("\n{} {} files to rename", 
+                        "📝".bright_white(),
+                        rename_count.to_string().bright_cyan().bold()
+                    );
                 }
             }
             
             for group in &duplicate_groups {
                 if group.len() > 1 {
-                    println!("\nDELETE DUPLICATES:");
+                    println!("\n{}", "🔍 DUPLICATE GROUP:".yellow().bold());
                     for (idx, path) in group.iter().enumerate() {
                         if idx == 0 {
-                            println!("  KEEP: {}", path.display());
+                            println!("  {} {}", 
+                                "KEEP:".bright_blue().bold(),
+                                path.display().to_string().bright_white()
+                            );
                         } else {
-                            println!("  DELETE: {}", path.display());
+                            println!("  {} {}", 
+                                "DELETE:".red().bold(),
+                                path.display().to_string().bright_black()
+                            );
                         }
                     }
                 }
             }
 
             if !files_to_delete.is_empty() {
-                println!("\nDELETE SMALL/CORRUPTED FILES:");
+                println!("\n{}", "🗑️  SMALL/CORRUPTED FILES TO DELETE:".red().bold());
                 for path in &files_to_delete {
-                    println!("  DELETE: {}", path.display());
+                    println!("  {} {}", 
+                        "DELETE:".red().bold(),
+                        path.display().to_string().bright_black()
+                    );
                 }
             }
             
             if !todo_list.items.is_empty() {
-                println!("\nTODO LIST:");
+                println!("\n{}", "📋 TODO LIST:".yellow().bold());
                 for item in &todo_list.items {
-                    println!("  - [ ] {}", item);
+                    println!("  {} {}", 
+                        "- [ ]".bright_yellow(),
+                        item.bright_white()
+                    );
                 }
             }
         }
@@ -123,7 +180,7 @@ fn main() -> Result<()> {
         // Write todo.md even in dry-run mode (as requested)
         todo_list.write()?;
         if !args.json {
-            println!("\n✓ todo.md written (dry-run mode)");
+            println!("\n{} todo.md written (dry-run mode)", "✓".green().bold());
         }
     } else {
         // Execute renames
@@ -150,11 +207,17 @@ fn main() -> Result<()> {
 
         // Delete small/corrupted files if requested
         if args.delete_small && !files_to_delete.is_empty() {
-            println!("\nDeleting {} small/corrupted files...", files_to_delete.len());
+            println!("\n{} {} small/corrupted files...", 
+                "🗑️".bright_white(),
+                files_to_delete.len().to_string().red().bold()
+            );
             for path in &files_to_delete {
                 std::fs::remove_file(path)?;
                 info!("Deleted small/corrupted file: {}", path.display());
-                println!("  Deleted: {}", path.display());
+                println!("  {} {}", 
+                    "Deleted:".red().bold(),
+                    path.display().to_string().bright_black()
+                );
             }
         }
 
@@ -164,7 +227,10 @@ fn main() -> Result<()> {
     }
 
     if !args.json {
-        println!("\n✓ Operation completed successfully!");
+        println!("\n{} {}", 
+            "✓".green().bold(),
+            "Operation completed successfully!".bright_green().bold()
+        );
     }
     Ok(())
 }

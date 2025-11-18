@@ -109,6 +109,13 @@ pub struct Args {
         help = "Skip MD5 hash computation for duplicate detection (useful for cloud storage like Dropbox to avoid triggering file downloads)"
     )]
     pub skip_cloud_hash: bool,
+
+    /// Automatically clean up .download/.crdownload folders after extracting PDFs
+    #[arg(
+        long,
+        help = "Automatically remove empty .download/.crdownload folders after extracting PDFs"
+    )]
+    pub cleanup_downloads: bool,
 }
 
 impl Args {

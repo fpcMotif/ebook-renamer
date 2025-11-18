@@ -109,6 +109,11 @@ impl Scanner {
                 return true;
             }
 
+            // Skip download folders only (not files) - they're handled by download_recovery module
+            if path.is_dir() && (filename.ends_with(".download") || filename.ends_with(".crdownload")) {
+                return true;
+            }
+
             // Skip known system directories
             let skip_dirs = ["Xcode", "node_modules", ".git", "__pycache__"];
             if skip_dirs.iter().any(|d| filename == *d) {

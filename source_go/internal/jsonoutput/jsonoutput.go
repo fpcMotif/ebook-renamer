@@ -11,12 +11,12 @@ import (
 )
 
 // FromResults creates an OperationsOutput from processing results
-func FromResults(cleanFiles []types.FileInfo, duplicateGroups [][]string, filesToDelete []string, todoItems []types.TodoItem, targetDir string) (*types.OperationsOutput, error) {
+func FromResults(cleanFiles []*types.FileInfo, duplicateGroups [][]string, filesToDelete []string, todoItems []types.TodoItem, targetDir string) (*types.OperationsOutput, error) {
 	output := &types.OperationsOutput{
-		Renames:                   []types.RenameOperation{},
-		DuplicateDeletes:          []types.DuplicateGroup{},
-		SmallOrCorruptedDeletes:   []types.DeleteOperation{},
-		TodoItems:                 []types.TodoItem{},
+		Renames:                 []types.RenameOperation{},
+		DuplicateDeletes:        []types.DuplicateGroup{},
+		SmallOrCorruptedDeletes: []types.DeleteOperation{},
+		TodoItems:               []types.TodoItem{},
 	}
 
 	// Add renames
@@ -25,7 +25,7 @@ func FromResults(cleanFiles []types.FileInfo, duplicateGroups [][]string, filesT
 		if file.NewName != nil {
 			fromPath := makeRelativePath(file.OriginalPath, targetDir)
 			toPath := makeRelativePath(file.NewPath, targetDir)
-			
+
 			renames = append(renames, types.RenameOperation{
 				From:   fromPath,
 				To:     toPath,
@@ -50,7 +50,7 @@ func FromResults(cleanFiles []types.FileInfo, duplicateGroups [][]string, filesT
 			}
 			// Sort delete paths for deterministic output
 			sort.Strings(deletePaths)
-			
+
 			duplicateDeletes = append(duplicateDeletes, types.DuplicateGroup{
 				Keep:   keepPath,
 				Delete: deletePaths,
@@ -103,7 +103,7 @@ func makeRelativePath(path, targetDir string) string {
 
 	// Convert to forward slashes for JSON output (POSIX-style)
 	relPath = strings.ReplaceAll(relPath, "\\", "/")
-	
+
 	// Handle case where path is the same as target directory
 	if relPath == "." {
 		relPath = ""

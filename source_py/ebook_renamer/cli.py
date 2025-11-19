@@ -3,6 +3,7 @@ Command-line interface for the ebook renamer.
 """
 
 import argparse
+import logging
 import os
 import sys
 from pathlib import Path
@@ -163,8 +164,16 @@ def parse_args() -> Config:
 
 def main() -> int:
     """Main entry point."""
+    # Setup logging with timestamp and milliseconds
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s.%(msecs)03d %(levelname)s: %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    
     try:
         config = parse_args()
+        logging.info(f"Starting ebook renamer with config: {config}")
         return process_files(config)
     except KeyboardInterrupt:
         print("\nOperation cancelled by user", file=sys.stderr)
@@ -181,10 +190,12 @@ def process_files(config: Config) -> int:
     
     # Scan for files
     files = scanner.scan()
+    logging.info(f"Found {len(files)} files to process")
 
     # Normalize filenames
     normalizer = Normalizer()
     normalized = normalizer.normalize_files(files)
+    logging.info(f"Normalized {len(normalized)} files")
 
     # Determine todo file path
     todo_file_path = determine_todo_file(config.path, config.todo_file)
@@ -222,6 +233,7 @@ def process_files(config: Config) -> int:
     # Detect duplicates
     detector = DuplicateDetector()
     duplicate_groups, clean_files = detector.detect_duplicates(normalized)
+    logging.info(f"Detected {len(duplicate_groups)} duplicate groups")
 
     # Sort todo items by category, then file for deterministic output (matching Rust)
     todo_items.sort(key=lambda x: (x["category"], x["file"]))
@@ -300,6 +312,7 @@ def execute_operations(clean_files, duplicate_groups, files_to_delete, todo_list
     for file_info in clean_files:
         if file_info.new_name:
             os.rename(file_info.original_path, file_info.new_path)
+            logging.info(f"Renamed: {file_info.original_name} -> {file_info.new_name}")
     
     # Delete duplicates
     if not config.no_delete:
@@ -308,16 +321,19 @@ def execute_operations(clean_files, duplicate_groups, files_to_delete, todo_list
                 for i, path in enumerate(group):
                     if i > 0:
                         os.remove(path)
+                        logging.info(f"Deleted duplicate: {path}")
     
     # Delete small/corrupted files
     if config.delete_small and files_to_delete:
         print(f"\nDeleting {len(files_to_delete)} small/corrupted files...")
         for path in files_to_delete:
             os.remove(path)
+            logging.info(f"Deleted small/corrupted file: {path}")
             print(f"  Deleted: {path}")
     
     # Write todo.md
     todo_list.write()
+    logging.info("Wrote todo.md")
 
 
 if __name__ == "__main__":

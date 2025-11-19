@@ -20,6 +20,11 @@ All three implementations produce identical JSON output and follow the same dete
 - ⚡ **JSON Output**: Machine-readable output for automation and testing
 - 🌐 **Multi-Platform**: Works on Windows, macOS, and Linux
 
+## Documentation
+
+- **[Formatting Standards](docs/formatting_standards.md)**: Detailed rules for filename normalization
+- **[Quick Reference](docs/formatting_quick_reference.md)**: Summary of regex patterns and rules
+
 ## Quick Start
 
 ### Rust Implementation
@@ -47,6 +52,12 @@ go build -o ebook-renamer ./cmd/ebook-renamer
 ```bash
 # Run directly
 python3 source_py/ebook-renamer.py --dry-run --json /path/to/books
+```
+
+### Ruby Implementation
+```bash
+# Run directly
+ruby source_rb/ebook-renamer.rb --dry-run --json /path/to/books
 ```
 
 ## CLI Reference

@@ -1,0 +1,23 @@
+cabal-version: 2.2
+
+name:           ebook-renamer
+version:        0.1.0.0
+description:    Batch rename and organize downloaded books and arXiv files
+author:         Ebook Renamer Team
+maintainer:     example@example.com
+license:        MIT
+build-type:     Simple
+
+executable ebook-renamer
+  main-is: Main.hs
+  other-modules:
+      Paths_ebook_renamer
+  hs-source-dirs:
+      app
+  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+      base >=4.7 && <5
+    , time
+    , directory
+    , filepath
+  default-language: Haskell2010

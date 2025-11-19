@@ -61,6 +61,10 @@ class Scanner:
         if dirname in skip_dirs:
             return True
         
+        # Skip download folders
+        if dirname.endswith(".download") or dirname.endswith(".crdownload"):
+            return True
+        
         return False
     
     def _should_skip_file(self, filename: str) -> bool:

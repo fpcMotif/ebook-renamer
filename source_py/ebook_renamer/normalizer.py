@@ -3,7 +3,8 @@ Filename normalization functionality for the ebook renamer.
 """
 
 import re
-from typing import List, Optional
+import os
+from typing import List, Optional, Tuple
 
 from .types import FileInfo, ParsedMetadata
 
@@ -11,53 +12,18 @@ from .types import FileInfo, ParsedMetadata
 class Normalizer:
     """Handles filename normalization according to the specification."""
     
-    # Series prefixes to remove
-    SERIES_PREFIXES = [
-        "London Mathematical Society Lecture Note Series",
-        "Graduate Texts in Mathematics",
-        "Progress in Mathematics",
-        "[Springer-Lehrbuch]",
-        "[Graduate studies in mathematics",
-        "[Progress in Mathematics №",
-        "[AMS Mathematical Surveys and Monographs",
-    ]
-    
-    # Source indicators to remove
-    SOURCE_INDICATORS = [
-        " - libgen.li",
-        " - libgen",
-        " - Z-Library",
-        " - z-Library",
-        " - Anna's Archive",
-        " (Z-Library)",
-        " (z-Library)",
-        " (libgen.li)",
-        " (libgen)",
-        " (Anna's Archive)",
-        " libgen.li.pdf",
-        " libgen.pdf",
-        " Z-Library.pdf",
-        " z-Library.pdf",
-        " Anna's Archive.pdf",
-    ]
-    
-    # Non-author keywords to filter out
-    NON_AUTHOR_KEYWORDS = [
-        "auth.",
-        "translator",
-        "translated by",
-        "Z-Library",
-        "libgen",
-        "Anna's Archive",
-        "2-Library",
-    ]
-    
     # Regex patterns
-    YEAR_REGEX = re.compile(r'\b(19|20)\d{2}\b')
-    YEAR_WITH_PUB_REGEX = re.compile(r'\s*\(\s*(19|20)\d{2}\s*(?:,\s*[^)]+)?\s*\)')
-    YEAR_COMMA_REGEX = re.compile(r'\s*(19|20)\d{2}\s*,\s*[^,]+$')
+    YEAR_REGEX = re.compile(r'\b(?:19|20)\d{2}\b')
     AUTH_REGEX = re.compile(r'\s*\([Aa]uth\.?\).*')
-    SPACE_REGEX = re.compile(r'\s+')
+    SPACE_REGEX = re.compile(r'\s{2,}')
+    BRACKET_REGEX = re.compile(r'\s*\[[^\]]*\]')
+    TRAILING_ID_REGEX = re.compile(r'[-_][A-Za-z0-9]{8,}$')
+    SIMPLE_PAREN_REGEX = re.compile(r'\([^)]+\)')
+    # Matches simple nested parens: ( ... ( ... ) ... )
+    NESTED_PAREN_REGEX = re.compile(r'\([^()]*(?:\([^()]*\)[^()]*)*\)')
+    TRAILING_AUTHOR_REGEX = re.compile(r'^(.+?)\s*\(([^)]+)\)\s*$')
+    SEPARATOR_REGEX = re.compile(r'^(.+?)\s*[-:]\s+(.+)$')
+    MULTI_AUTHOR_REGEX = re.compile(r'^([A-Z][^:]+?),\s*([A-Z][^:]+?)\s*[-:]\s+(.+)$')
     
     def normalize_files(self, files: List[FileInfo]) -> List[FileInfo]:
         """Normalize filenames according to the specification."""
@@ -74,14 +40,15 @@ class Normalizer:
             
             # Update file info
             file.new_name = new_name
-            file.new_path = f"{self._get_dir_name(file.original_path)}/{new_name}"
+            dir_name = os.path.dirname(file.original_path)
+            file.new_path = os.path.join(dir_name, new_name)
             result.append(file)
         
         return result
     
     def _parse_filename(self, filename: str, extension: str) -> ParsedMetadata:
         """Parse a filename into metadata components."""
-        # Remove extension and any .download suffix
+        # Step 1: Remove extension
         base = filename
         if base.endswith(".download"):
             base = base[:-len(".download")]
@@ -89,20 +56,23 @@ class Normalizer:
             base = base[:-len(extension)]
         base = base.strip()
         
-        # Clean up obvious noise/series prefixes
-        base = self._strip_prefix_noise(base)
+        # Step 2: Remove series prefixes (must be early)
+        base = self._remove_series_prefixes(base)
         
-        # Clean source indicators BEFORE parsing authors and titles
-        base = self._clean_source_indicators(base)
+        # Step 3: Clean noise sources
+        base = self._clean_noise_sources(base)
         
-        # Extract year (4 digits: 19xx or 20xx)
+        # Step 4: Remove ALL bracketed annotations
+        base = self.BRACKET_REGEX.sub("", base)
+        
+        # Step 5: Extract year FIRST
         year = self._extract_year(base)
         
-        # Remove year and surrounding brackets/parens from base for further processing
-        base_without_year = self._remove_year_from_string(base)
+        # Step 6: Remove parentheticals
+        base = self._clean_parentheticals(base, year)
         
-        # Try to split authors and title by common separators
-        authors, title = self._split_authors_and_title(base_without_year)
+        # Step 7: Parse author and title
+        authors, title = self._smart_parse_author_title(base)
         
         return ParsedMetadata(
             authors=authors,
@@ -110,139 +80,186 @@ class Normalizer:
             year=year,
         )
     
-    def _strip_prefix_noise(self, s: str) -> str:
-        """Remove series prefixes."""
-        for prefix in self.SERIES_PREFIXES:
-            if s.startswith(prefix):
-                s = s[len(prefix):]
-                # Remove leading spaces or dashes
-                s = s.lstrip(" -")
+    def _remove_series_prefixes(self, s: str) -> str:
+        prefixes = [
+            "London Mathematical Society Lecture Note Series",
+            "Graduate Texts in Mathematics",
+            "Progress in Mathematics",
+            "[Springer-Lehrbuch]",
+            "[Graduate studies in mathematics",
+            "[Progress in Mathematics №",
+            "[AMS Mathematical Surveys and Monographs",
+        ]
+        
+        result = s
+        for prefix in prefixes:
+            if result.startswith(prefix):
+                result = result[len(prefix):]
+                result = result.lstrip("- ]")
                 break
-        return s
-    
-    def _clean_source_indicators(self, s: str) -> str:
-        """Remove source indicators."""
-        for pattern in self.SOURCE_INDICATORS:
-            if s.endswith(pattern):
-                s = s[:-len(pattern)]
-        return s.strip()
-    
+        return result.strip()
+
+    def _clean_noise_sources(self, s: str) -> str:
+        patterns = [
+            r'\s*[-\(]?\s*[zZ]-?Library(?:\.pdf)?\s*[)\.]?',
+            r'\s*[-\(]?\s*libgen(?:\.li)?(?:\.pdf)?\s*[)\.]?',
+            r'\s*[-\(]?\s*Anna\'?s?\s+Archive(?:\.pdf)?\s*[)\.]?',
+            # Hash patterns
+            r'\s*--\s*[a-f0-9]{32}\s*(?:--)?',
+            r'\s*--\s*\d{10,13}\s*(?:--)?',
+            r'\s*--\s*[A-Za-z0-9]{16,}\s*(?:--)?',
+            r'\s*--\s*[a-f0-9]{8,}\s*(?:--)?',
+        ]
+        result = s
+        for pattern in patterns:
+            result = re.sub(pattern, "", result)
+        return result.strip()
+
     def _extract_year(self, s: str) -> Optional[int]:
         """Extract the last year found in the string."""
         matches = self.YEAR_REGEX.findall(s)
         if not matches:
             return None
+        return int(matches[-1])
+
+    def _clean_parentheticals(self, s: str, year: Optional[int]) -> str:
+        result = s
         
-        # Return the last year found (usually most relevant)
-        last_match = matches[-1]
-        try:
-            return int(last_match)
-        except ValueError:
-            return None
-    
-    def _remove_year_from_string(self, s: str) -> str:
-        """Remove year patterns from the string."""
-        # Remove year patterns but keep the rest of the string
-        # Pattern: (YYYY, Publisher) or (YYYY) or YYYY,
-        result = self.YEAR_WITH_PUB_REGEX.sub("", s)
-        result = self.YEAR_COMMA_REGEX.sub("", result)
-        return result
-    
-    def _split_authors_and_title(self, s: str) -> tuple[Optional[str], str]:
-        """Split authors and title from the cleaned string."""
-        # Check for trailing (author) pattern
-        last_open_paren = s.rfind("(")
-        if last_open_paren != -1 and s.endswith(")"):
-            potential_author = s[last_open_paren+1:-1].strip()
-            if self._is_likely_author(potential_author):
-                title = s[:last_open_paren].strip()
-                return potential_author, title
-        
-        # Check for " - " separator (most common)
-        last_dash = s.rfind(" - ")
-        if last_dash != -1:
-            maybe_author = s[:last_dash].strip()
-            maybe_title = s[last_dash+3:].strip()
+        # Pattern 1: Remove (YYYY, Publisher) or (YYYY)
+        if year is not None:
+            pattern = re.compile(r'\s*\(\s*{}\s*(?:,\s*[^)]+)?\s*\)'.format(year))
+            result = pattern.sub("", result)
             
-            if self._is_likely_author(maybe_author) and maybe_title != "":
-                clean_author = self._clean_author_name(maybe_author)
-                clean_title = self._clean_title(maybe_title)
-                return clean_author, clean_title
-        
-        # Check for ":" separator
-        colon_index = s.find(":")
-        if colon_index != -1:
-            maybe_author = s[:colon_index].strip()
-            maybe_title = s[colon_index+1:].strip()
+        # Pattern 2: Remove nested parentheticals with publisher keywords
+        while True:
+            changed = False
+            def replace_nested(match):
+                nonlocal changed
+                content = match.group(0)
+                if self._is_publisher_or_series_info(content):
+                    changed = True
+                    return ""
+                return content
             
-            if self._is_likely_author(maybe_author) and maybe_title != "":
-                clean_author = self._clean_author_name(maybe_author)
-                clean_title = self._clean_title(maybe_title)
-                return clean_author, clean_title
-        
-        # If no clear separator, treat entire string as title
-        return None, self._clean_title(s)
-    
-    def _is_likely_author(self, s: str) -> bool:
-        """Determine if a string is likely an author name."""
+            new_result = self.NESTED_PAREN_REGEX.sub(replace_nested, result)
+            if not changed:
+                break
+            result = new_result
+            
+        # Pattern 3: Remove simple parentheticals with publisher keywords
+        def replace_simple(match):
+            content = match.group(0)
+            if self._is_publisher_or_series_info(content):
+                return ""
+            return content
+            
+        result = self.SIMPLE_PAREN_REGEX.sub(replace_simple, result)
+        result = self.SPACE_REGEX.sub(" ", result)
+        return result.strip()
+
+    def _smart_parse_author_title(self, s: str) -> Tuple[Optional[str], str]:
         s = s.strip()
         
-        # Too short to be an author
+        # Pattern 1: "Title (Author)"
+        match = self.TRAILING_AUTHOR_REGEX.match(s)
+        if match:
+            title_part = match.group(1)
+            author_part = match.group(2)
+            if self._is_likely_author(author_part) and not self._is_publisher_or_series_info("("+author_part+")"):
+                return self._clean_author_name(author_part), self._clean_title(title_part)
+                
+        # Pattern 2: "Author - Title" or "Author: Title"
+        match = self.SEPARATOR_REGEX.match(s)
+        if match:
+            author_part = match.group(1)
+            title_part = match.group(2)
+            if self._is_likely_author(author_part) and title_part:
+                return self._clean_author_name(author_part), self._clean_title(title_part)
+                
+        # Pattern 3: Multiple authors
+        match = self.MULTI_AUTHOR_REGEX.match(s)
+        if match:
+            author1 = match.group(1)
+            author2 = match.group(2)
+            title_part = match.group(3)
+            if self._is_likely_author(author1) and self._is_likely_author(author2):
+                authors = f"{self._clean_author_name(author1)}, {self._clean_author_name(author2)}"
+                return authors, self._clean_title(title_part)
+                
+        return None, self._clean_title(s)
+
+    def _is_likely_author(self, s: str) -> bool:
+        s = s.strip()
         if len(s) < 2:
             return False
-        
-        # Filter out obvious non-author phrases
+            
+        non_author_keywords = [
+            "auth.", "translator", "translated by", "z-library", "libgen", "anna's archive", "2-library",
+        ]
         s_lower = s.lower()
-        for keyword in self.NON_AUTHOR_KEYWORDS:
-            if keyword in s_lower:
+        for k in non_author_keywords:
+            if k in s_lower:
                 return False
+                
+        # Check if digits only
+        if all(c.isdigit() or c in '-_' for c in s):
+            return False
+            
+        # Check if name-like (uppercase Latin OR non-Latin letter)
+        has_uppercase = any(c.isupper() for c in s)
+        # Basic check for non-ASCII letters (covers CJK, etc.)
+        has_non_latin = any(ord(c) > 127 and c.isalpha() for c in s)
         
-        # Check if looks like a name (has at least one uppercase letter)
-        for char in s:
-            if char.isupper():
-                return True
-        
-        return False
-    
+        return has_uppercase or has_non_latin
+
     def _clean_author_name(self, s: str) -> str:
-        """Clean up author name."""
         s = s.strip()
-        
-        # Remove trailing (auth.) etc.
         s = self.AUTH_REGEX.sub("", s)
         
-        return s.strip()
-    
-    def _clean_title(self, s: str) -> str:
-        """Clean up title."""
-        s = s.strip()
+        comma_count = s.count(",")
+        if comma_count == 1:
+            parts = s.split(", ")
+            if len(parts) == 2:
+                before = parts[0].strip()
+                after = parts[1].strip()
+                if len(before.split()) == 1 and len(after.split()) == 1:
+                    s = f"{before} {after}"
         
-        # Remove trailing source markers
-        for pattern in self.SOURCE_INDICATORS:
-            if s.endswith(pattern):
-                s = s[:-len(pattern)]
-        
-        # Remove trailing .download suffix
-        while s.endswith(".download"):
-            s = s[:-len(".download")]
-        
-        # Remove (auth.) and similar patterns
-        s = self.AUTH_REGEX.sub("", s)
-        
-        # Clean up orphaned brackets/parens
-        s = self._clean_orphaned_brackets(s)
-        
-        # Remove multiple spaces
         s = self.SPACE_REGEX.sub(" ", s)
-        
-        # Remove leading/trailing punctuation
-        s = s.rstrip("-:;,")
-        s = s.lstrip("-:;,")
-        
         return s.strip()
-    
+
+    def _clean_title(self, s: str) -> str:
+        s = s.strip()
+        s = self._clean_noise_sources(s)
+        s = self.AUTH_REGEX.sub("", s)
+        s = self.TRAILING_ID_REGEX.sub("", s)
+        s = self._clean_orphaned_brackets(s)
+        s = self.SPACE_REGEX.sub(" ", s)
+        s = s.strip("-:;,.")
+        return s.strip()
+
+    def _is_publisher_or_series_info(self, s: str) -> bool:
+        publisher_keywords = [
+            "Press", "Publishing", "Academic Press", "Springer", "Cambridge", "Oxford", "MIT Press",
+            "Series", "Textbook Series", "Graduate Texts", "Graduate Studies", "Lecture Notes",
+            "Pure and Applied", "Mathematics", "Foundations of", "Monographs", "Studies", "Collection",
+            "Textbook", "Edition", "Vol.", "Volume", "No.", "Part", "理工", "出版社", "の",
+        ]
+        
+        for k in publisher_keywords:
+            if k in s:
+                return True
+                
+        # Check for series info (mostly non-letters with numbers)
+        has_numbers = any(c.isdigit() for c in s)
+        non_letter_count = sum(1 for c in s if not c.isalpha() and c != ' ')
+        
+        if has_numbers and non_letter_count > 2:
+            return True
+            
+        return False
+
     def _clean_orphaned_brackets(self, s: str) -> str:
-        """Remove orphaned brackets and replace underscores."""
         result = []
         open_parens = 0
         open_brackets = 0
@@ -263,33 +280,22 @@ class Normalizer:
                     open_brackets -= 1
                     result.append(char)
             elif char == '_':
-                result.append(' ')  # Replace underscores with spaces
+                result.append(' ')
             else:
                 result.append(char)
         
-        # Remove trailing orphaned opening brackets
         result_str = ''.join(result)
         while result_str.endswith('(') or result_str.endswith('['):
             result_str = result_str[:-1]
-        
+            
         return result_str
-    
+
     def _generate_new_filename(self, metadata: ParsedMetadata, extension: str) -> str:
-        """Generate the new filename from metadata."""
         parts = []
-        
         if metadata.authors:
-            parts.append(metadata.authors)
-        
+            parts.append(f"{metadata.authors} - ")
         parts.append(metadata.title)
-        
         if metadata.year is not None:
-            parts.append(f"({metadata.year})")
-        
+            parts.append(f" ({metadata.year})")
         parts.append(extension)
-        
-        return ''.join(parts)
-    
-    def _get_dir_name(self, path: str) -> str:
-        """Get directory name from path."""
-        return path.rsplit('/', 1)[0] if '/' in path else '.'
+        return "".join(parts)

@@ -6,64 +6,36 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/ebook-renamer/go/internal/types"
 )
 
-// Series prefixes to remove
-var seriesPrefixes = []string{
-	"London Mathematical Society Lecture Note Series",
-	"Graduate Texts in Mathematics",
-	"Progress in Mathematics",
-	"[Springer-Lehrbuch]",
-	"[Graduate studies in mathematics",
-	"[Progress in Mathematics №",
-	"[AMS Mathematical Surveys and Monographs",
-}
-
-// Source indicators to remove
-var sourceIndicators = []string{
-	" - libgen.li",
-	" - libgen",
-	" - Z-Library",
-	" - z-Library",
-	" - Anna's Archive",
-	" (Z-Library)",
-	" (z-Library)",
-	" (libgen.li)",
-	" (libgen)",
-	" (Anna's Archive)",
-	" libgen.li.pdf",
-	" libgen.pdf",
-	" Z-Library.pdf",
-	" z-Library.pdf",
-	" Anna's Archive.pdf",
-}
-
-// Non-author keywords to filter out
-var nonAuthorKeywords = []string{
-	"auth.",
-	"translator",
-	"translated by",
-	"Z-Library",
-	"libgen",
-	"Anna's Archive",
-	"2-Library",
-}
-
 // Regex patterns
 var (
 	yearRegex        = regexp.MustCompile(`\b(19|20)\d{2}\b`)
-	yearWithPubRegex = regexp.MustCompile(`\s*\(\s*(19|20)\d{2}\s*(?:,\s*[^)]+)?\s*\)`)
-	yearCommaRegex   = regexp.MustCompile(`\s*(19|20)\d{2}\s*,\s*[^,]+$`)
-	authRegex        = regexp.MustCompile(`\s*\([Aa]uth\.?\).*`)
-	spaceRegex       = regexp.MustCompile(`\s+`)
+	spaceRegex       = regexp.MustCompile(`\s{2,}`)
+	bracketRegex     = regexp.MustCompile(`\s*\[[^\]]*\]`)
+	trailingIDRegex  = regexp.MustCompile(`[-_][A-Za-z0-9]{8,}$`)
+	simpleParenRegex = regexp.MustCompile(`\([^)]+\)`)
+	// Go's regex engine (RE2) doesn't support recursion, so we iterate for nested parens
+	nestedParenRegex = regexp.MustCompile(`\([^()]*(?:\([^()]*\)[^()]*)*\)`)
+
+	// Author/Title patterns
+	trailingAuthorRegex = regexp.MustCompile(`^(.+?)\s*\(([^)]+)\)\s*$`)
+	separatorRegex      = regexp.MustCompile(`^(.+?)\s*(?:--|[-:])\s+(.+)$`)
+	multiAuthorRegex    = regexp.MustCompile(`^([A-Z][^:]+?),\s*([A-Z][^:]+?)\s*(?:--|[-:])\s+(.+)$`)
+	semicolonRegex      = regexp.MustCompile(`^(.+?)\s*;\s*(.+)$`)
+
+	// Cleaning patterns
+	authNoiseRegex    = regexp.MustCompile(`\s*\((?:[Aa]uth\.?|[Aa]uthor|[Ee]ds?\.?|[Tt]ranslator)\)`)
+	trailingAuthRegex = regexp.MustCompile(`\s*\([Aa]uth\.?\)`)
 )
 
 // NormalizeFiles normalizes filenames according to the specification
-func NormalizeFiles(files []types.FileInfo) ([]types.FileInfo, error) {
-	result := make([]types.FileInfo, len(files))
-	
+func NormalizeFiles(files []*types.FileInfo) ([]*types.FileInfo, error) {
+	result := make([]*types.FileInfo, len(files))
+
 	for i, file := range files {
 		// Skip normalization for failed/damaged files
 		if file.IsFailedDownload || file.IsTooSmall {
@@ -77,12 +49,18 @@ func NormalizeFiles(files []types.FileInfo) ([]types.FileInfo, error) {
 		}
 
 		newName := generateNewFilename(metadata, file.Extension)
-		
+
 		// Update file info
-		updatedFile := file
-		updatedFile.NewName = &newName
-		updatedFile.NewPath = filepathJoin(filepath.Dir(file.OriginalPath), newName)
-		result[i] = updatedFile
+		// We need to create a copy or modify the pointer if it's mutable.
+		// Since we are returning a new slice of pointers, we can just modify the struct if we own it,
+		// or create a new one. FileInfo is a struct pointer in the input slice?
+		// The input is []*types.FileInfo.
+		// Let's modify it in place or create a copy.
+		// Rust implementation modifies in place.
+
+		file.NewName = &newName
+		file.NewPath = filepathJoin(filepath.Dir(file.OriginalPath), newName)
+		result[i] = file
 	}
 
 	return result, nil
@@ -90,30 +68,33 @@ func NormalizeFiles(files []types.FileInfo) ([]types.FileInfo, error) {
 
 // parseFilename parses a filename into metadata components
 func parseFilename(filename, extension string) (types.ParsedMetadata, error) {
-	// Remove extension and any .download suffix
+	// Step 1: Remove extension
 	base := filename
-	if strings.HasSuffix(base, ".download") {
-		base = base[:len(base)-len(".download")]
-	}
-	if strings.HasSuffix(base, extension) {
-		base = base[:len(base)-len(extension)]
-	}
+	base = strings.TrimSuffix(base, ".download")
+	base = strings.TrimSuffix(base, extension)
 	base = strings.TrimSpace(base)
 
-	// Clean up obvious noise/series prefixes
-	base = stripPrefixNoise(base)
+	// Step 2: Remove series prefixes (must be early)
+	base = removeSeriesPrefixes(base)
 
-	// Clean source indicators BEFORE parsing authors and titles
-	base = cleanSourceIndicators(base)
+	// Step 3: Remove ALL bracketed annotations
+	base = bracketRegex.ReplaceAllString(base, "")
 
-	// Extract year (4 digits: 19xx or 20xx)
+	// Step 4: Clean noise sources (Z-Library, etc.)
+	// MUST happen BEFORE author parsing
+	base = cleanNoiseSources(base)
+
+	// Step 5: Remove duplicate markers: -2, -3, (1), (2)
+	base = removeDuplicateMarkers(base)
+
+	// Step 6: Extract year FIRST
 	year := extractYear(base)
 
-	// Remove year and surrounding brackets/parens from base for further processing
-	baseWithoutYear := removeYearFromString(base)
+	// Step 7: Remove parentheticals
+	base = cleanParentheticals(base, year)
 
-	// Try to split authors and title by common separators
-	authors, title := splitAuthorsAndTitle(baseWithoutYear)
+	// Step 8: Parse author and title
+	authors, title := smartParseAuthorTitle(base)
 
 	return types.ParsedMetadata{
 		Authors: authors,
@@ -122,170 +103,327 @@ func parseFilename(filename, extension string) (types.ParsedMetadata, error) {
 	}, nil
 }
 
-// stripPrefixNoise removes series prefixes
-func stripPrefixNoise(s string) string {
-	for _, prefix := range seriesPrefixes {
-		if strings.HasPrefix(s, prefix) {
-			s = s[len(prefix):]
-			// Remove leading spaces or dashes
-			s = strings.TrimLeft(s, " -")
+func removeSeriesPrefixes(s string) string {
+	prefixes := []string{
+		"London Mathematical Society Lecture Note Series",
+		"Graduate Texts in Mathematics",
+		"Progress in Mathematics",
+		"[Springer-Lehrbuch]",
+		"[Graduate studies in mathematics",
+		"[Progress in Mathematics №",
+		"[AMS Mathematical Surveys and Monographs",
+	}
+
+	result := s
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(result, prefix) {
+			result = result[len(prefix):]
+			result = strings.TrimLeft(result, "- ]")
 			break
 		}
 	}
+	return strings.TrimSpace(result)
+}
+
+func cleanNoiseSources(s string) string {
+	patterns := []string{
+		// Z-Library variants
+		`\s*[-\(]?\s*[zZ]-?Library\s*[)\.]?`,
+		`\s*\([zZ]-?Library\)`,
+		`\s*-\s*[zZ]-?Library`,
+		// libgen variants
+		`\s*[-\(]?\s*libgen(?:\.li)?\s*[)\.]?`,
+		`\s*\(libgen(?:\.li)?\)`,
+		`\s*-\s*libgen(?:\.li)?`,
+		// Anna's Archive variants
+		`Anna'?s?\s*Archive`,
+		`\s*[-\(]?\s*Anna'?s?\s+Archive\s*[)\.]?`,
+		`\s*\(Anna'?s?\s+Archive\)`,
+		`\s*-\s*Anna'?s?\s+Archive`,
+		// Hash patterns
+		`\s*--\s*[a-f0-9]{32}\s*(?:--)?`,
+		`\s*--\s*\d{10,13}\s*(?:--)?`,
+		`\s*--\s*[A-Za-z0-9]{16,}\s*(?:--)?`,
+		`\s*--\s*[a-f0-9]{8,}\s*(?:--)?`,
+	}
+
+	result := s
+	// Apply patterns multiple times
+	for i := 0; i < 3; i++ {
+		before := result
+		for _, p := range patterns {
+			re := regexp.MustCompile(p)
+			result = re.ReplaceAllString(result, "")
+		}
+		if result == before {
+			break
+		}
+	}
+	return strings.TrimSpace(result)
+}
+
+func removeDuplicateMarkers(s string) string {
+	// (1), (2) at end
+	re1 := regexp.MustCompile(`[-\s]*\(\d{1,2}\)\s*$`)
+	s = re1.ReplaceAllString(s, "")
+
+	// -2, -3 at end
+	re2 := regexp.MustCompile(`-\d{1,2}\s*$`)
+	s = re2.ReplaceAllString(s, "")
+
+	// -2 before (year)
+	re3 := regexp.MustCompile(`-\d{1,2}\s+\(`)
+	s = re3.ReplaceAllString(s, " (")
+
 	return s
 }
 
-// cleanSourceIndicators removes source indicators
-func cleanSourceIndicators(s string) string {
-	for _, pattern := range sourceIndicators {
-		if strings.HasSuffix(s, pattern) {
-			s = s[:len(s)-len(pattern)]
-		}
-	}
-	return strings.TrimSpace(s)
-}
-
-// extractYear extracts the last year found in the string
 func extractYear(s string) *uint16 {
 	matches := yearRegex.FindAllString(s, -1)
 	if len(matches) == 0 {
 		return nil
 	}
-
-	// Return the last year found (usually most relevant)
+	// Return the last year found
 	lastMatch := matches[len(matches)-1]
 	year, err := strconv.ParseUint(lastMatch, 10, 16)
 	if err != nil {
 		return nil
 	}
-	
 	y := uint16(year)
 	return &y
 }
 
-// removeYearFromString removes year patterns from the string
-func removeYearFromString(s string) string {
-	// Remove year patterns but keep the rest of the string
-	// Pattern: (YYYY, Publisher) or (YYYY) or YYYY,
-	result := yearWithPubRegex.ReplaceAllString(s, "")
-	result = yearCommaRegex.ReplaceAllString(result, "")
-	return result
+func cleanParentheticals(s string, year *uint16) string {
+	result := s
+
+	// Pattern 1: Remove (YYYY, Publisher) or (YYYY)
+	if year != nil {
+		y := *year
+		pattern := fmt.Sprintf(`\s*\(\s*%d\s*(?:,\s*[^)]+)?\s*\)`, y)
+		re := regexp.MustCompile(pattern)
+		result = re.ReplaceAllString(result, "")
+	}
+
+	// Pattern 2: Remove nested parentheticals with publisher keywords
+	for {
+		changed := false
+		result = nestedParenRegex.ReplaceAllStringFunc(result, func(match string) string {
+			if isPublisherOrSeriesInfo(match) {
+				changed = true
+				return ""
+			}
+			return match
+		})
+		if !changed {
+			break
+		}
+	}
+
+	// Pattern 3: Remove simple parentheticals with publisher keywords
+	result = simpleParenRegex.ReplaceAllStringFunc(result, func(match string) string {
+		if isPublisherOrSeriesInfo(match) {
+			return ""
+		}
+		return match
+	})
+
+	result = spaceRegex.ReplaceAllString(result, " ")
+	return strings.TrimSpace(result)
 }
 
-// splitAuthorsAndTitle splits authors and title from the cleaned string
-func splitAuthorsAndTitle(s string) (*string, string) {
-	// Check for trailing (author) pattern
-	if lastOpenParen := strings.LastIndex(s, "("); lastOpenParen != -1 && strings.HasSuffix(s, ")") {
-		potentialAuthor := s[lastOpenParen+1 : len(s)-1]
-		potentialAuthor = strings.TrimSpace(potentialAuthor)
-		if isLikelyAuthor(potentialAuthor) {
-			title := strings.TrimSpace(s[:lastOpenParen])
-			return &potentialAuthor, title
+func smartParseAuthorTitle(s string) (*string, string) {
+	s = strings.TrimSpace(s)
+
+	// Pattern 1: "Title (Author)"
+	if matches := trailingAuthorRegex.FindStringSubmatch(s); matches != nil {
+		titlePart := matches[1]
+		authorPart := matches[2]
+
+		if isLikelyAuthor(authorPart) && !isPublisherOrSeriesInfo("("+authorPart+")") {
+			cleanAuth := cleanAuthorName(authorPart)
+			cleanTitl := cleanTitle(titlePart)
+			return &cleanAuth, cleanTitl
 		}
 	}
 
-	// Check for " - " separator (most common)
-	if lastDash := strings.LastIndex(s, " - "); lastDash != -1 {
-		maybeAuthor := strings.TrimSpace(s[:lastDash])
-		maybeTitle := strings.TrimSpace(s[lastDash+3:])
-		
-		if isLikelyAuthor(maybeAuthor) && maybeTitle != "" {
-			cleanAuthor := cleanAuthorName(maybeAuthor)
-			cleanTitle := cleanTitle(maybeTitle)
-			return &cleanAuthor, cleanTitle
+	// Pattern 2: "Author - Title" or "Author: Title"
+	if matches := separatorRegex.FindStringSubmatch(s); matches != nil {
+		authorPart := matches[1]
+		titlePart := matches[2]
+
+		if isLikelyAuthor(authorPart) && titlePart != "" {
+			cleanAuth := cleanAuthorName(authorPart)
+			cleanTitl := cleanTitle(titlePart)
+			return &cleanAuth, cleanTitl
 		}
 	}
 
-	// Check for ":" separator
-	if colonIndex := strings.Index(s, ":"); colonIndex != -1 {
-		maybeAuthor := strings.TrimSpace(s[:colonIndex])
-		maybeTitle := strings.TrimSpace(s[colonIndex+1:])
-		
-		if isLikelyAuthor(maybeAuthor) && maybeTitle != "" {
-			cleanAuthor := cleanAuthorName(maybeAuthor)
-			cleanTitle := cleanTitle(maybeTitle)
-			return &cleanAuthor, cleanTitle
+	// Pattern 3: Multiple authors separated by commas, then dash
+	if matches := multiAuthorRegex.FindStringSubmatch(s); matches != nil {
+		author1 := matches[1]
+		author2 := matches[2]
+		titlePart := matches[3]
+
+		if isLikelyAuthor(author1) && isLikelyAuthor(author2) {
+			authors := fmt.Sprintf("%s, %s", cleanAuthorName(author1), cleanAuthorName(author2))
+			cleanTitl := cleanTitle(titlePart)
+			return &authors, cleanTitl
 		}
 	}
 
-	// If no clear separator, treat entire string as title
+	// Pattern 4: "Title; Author"
+	if matches := semicolonRegex.FindStringSubmatch(s); matches != nil {
+		titlePart := matches[1]
+		authorPart := matches[2]
+
+		if isLikelyAuthor(authorPart) && !isPublisherOrSeriesInfo(authorPart) {
+			cleanAuth := cleanAuthorName(authorPart)
+			cleanTitl := cleanTitle(titlePart)
+			return &cleanAuth, cleanTitl
+		}
+	}
+
+	// Pattern 5: No clear author
 	return nil, cleanTitle(s)
 }
 
-// isLikelyAuthor determines if a string is likely an author name
 func isLikelyAuthor(s string) bool {
 	s = strings.TrimSpace(s)
-	
-	// Too short to be an author
 	if len(s) < 2 {
 		return false
 	}
 
-	// Filter out obvious non-author phrases
-	for _, keyword := range nonAuthorKeywords {
-		if strings.Contains(strings.ToLower(s), keyword) {
+	nonAuthorKeywords := []string{
+		"auth.", "translator", "translated by", "z-library", "libgen", "anna's archive", "2-library",
+	}
+	// Case insensitive check
+	lowerS := strings.ToLower(s)
+	for _, k := range nonAuthorKeywords {
+		if strings.Contains(lowerS, k) {
 			return false
 		}
 	}
 
-	// Check if looks like a name (has at least one uppercase letter)
-	for _, r := range s {
-		if r >= 'A' && r <= 'Z' {
+	// Check if contains digits only
+	hasDigitOnly := true
+	for _, c := range s {
+		if !unicode.IsDigit(c) && c != '-' && c != '_' {
+			hasDigitOnly = false
+			break
+		}
+	}
+	if hasDigitOnly {
+		return false
+	}
+
+	// Check if looks like a name (uppercase Latin OR non-Latin alphabetic)
+	hasUppercase := false
+	hasNonLatin := false
+	for _, c := range s {
+		if unicode.IsUpper(c) {
+			hasUppercase = true
+		}
+		if unicode.IsLetter(c) && c > 127 { // Rough check for non-ASCII letters
+			hasNonLatin = true
+		}
+	}
+
+	return hasUppercase || hasNonLatin
+}
+
+func cleanAuthorName(s string) string {
+	s = strings.TrimSpace(s)
+
+	// Remove noise patterns
+	s = authNoiseRegex.ReplaceAllString(s, "")
+
+	// Smart comma handling
+	commaCount := strings.Count(s, ",")
+	if commaCount == 1 {
+		if idx := strings.Index(s, ", "); idx != -1 {
+			before := strings.TrimSpace(s[:idx])
+			after := strings.TrimSpace(s[idx+2:])
+
+			beforeWords := len(strings.Fields(before))
+			afterWords := len(strings.Fields(after))
+
+			// Join if both parts are single words (Marco, Grandis -> Marco Grandis)
+			if beforeWords == 1 && afterWords == 1 {
+				s = fmt.Sprintf("%s %s", before, after)
+			}
+		}
+	}
+	// If multiple commas, keep them ALL
+
+	s = spaceRegex.ReplaceAllString(s, " ")
+	return strings.TrimSpace(s)
+}
+
+func cleanTitle(s string) string {
+	s = strings.TrimSpace(s)
+
+	// Remove (auth.)
+	s = trailingAuthRegex.ReplaceAllString(s, "")
+
+	// Strip trailing ID-like noise
+	s = trailingIDRegex.ReplaceAllString(s, "")
+
+	// Clean orphaned brackets
+	s = cleanOrphanedBrackets(s)
+
+	s = spaceRegex.ReplaceAllString(s, " ")
+	s = strings.TrimRight(s, "-:;,.")
+	s = strings.TrimLeft(s, "-:;,.")
+
+	return strings.TrimSpace(s)
+}
+
+func isPublisherOrSeriesInfo(s string) bool {
+	publisherKeywords := []string{
+		"Press", "Publishing", "Academic Press", "Springer", "Cambridge", "Oxford", "MIT Press",
+		"Series", "Textbook Series", "Graduate Texts", "Graduate Studies", "Lecture Notes",
+		"Pure and Applied", "Mathematics", "Foundations of", "Monographs", "Studies", "Collection",
+		"Textbook", "Edition", "Vol.", "Volume", "No.", "Part", "理工", "出版社", "の",
+		"Z-Library", "libgen", "Anna's Archive",
+	}
+
+	for _, k := range publisherKeywords {
+		if strings.Contains(s, k) {
 			return true
 		}
+	}
+
+	// Detect hash patterns
+	if regexp.MustCompile(`[a-f0-9]{8,}`).MatchString(s) && len(s) > 8 {
+		return true
+	}
+	if regexp.MustCompile(`[A-Za-z0-9]{16,}`).MatchString(s) && len(s) > 16 {
+		return true
+	}
+
+	// Check for series info (mostly non-letters with numbers)
+	hasNumbers := false
+	nonLetterCount := 0
+	for _, c := range s {
+		if unicode.IsDigit(c) {
+			hasNumbers = true
+		}
+		if !unicode.IsLetter(c) && c != ' ' {
+			nonLetterCount++
+		}
+	}
+	if hasNumbers && nonLetterCount > 2 {
+		return true
 	}
 
 	return false
 }
 
-// cleanAuthorName cleans up author name
-func cleanAuthorName(s string) string {
-	s = strings.TrimSpace(s)
-	
-	// Remove trailing (auth.) etc.
-	s = authRegex.ReplaceAllString(s, "")
-	
-	return strings.TrimSpace(s)
-}
-
-// cleanTitle cleans up title
-func cleanTitle(s string) string {
-	s = strings.TrimSpace(s)
-
-	// Remove trailing source markers
-	for _, pattern := range sourceIndicators {
-		if strings.HasSuffix(s, pattern) {
-			s = s[:len(s)-len(pattern)]
-		}
-	}
-
-	// Remove trailing .download suffix
-	for strings.HasSuffix(s, ".download") {
-		s = s[:len(s)-len(".download")]
-	}
-
-	// Remove (auth.) and similar patterns
-	s = authRegex.ReplaceAllString(s, "")
-
-	// Clean up orphaned brackets/parens
-	s = cleanOrphanedBrackets(s)
-
-	// Remove multiple spaces
-	s = spaceRegex.ReplaceAllString(s, " ")
-
-	// Remove leading/trailing punctuation
-	s = strings.TrimRight(s, "-:;,")
-	s = strings.TrimLeft(s, "-:;,")
-
-	return strings.TrimSpace(s)
-}
-
-// cleanOrphanedBrackets removes orphaned brackets and replaces underscores
 func cleanOrphanedBrackets(s string) string {
 	var result strings.Builder
 	openParens := 0
 	openBrackets := 0
-	
+
 	for _, r := range s {
 		switch r {
 		case '(':
@@ -305,41 +443,34 @@ func cleanOrphanedBrackets(s string) string {
 				result.WriteRune(r)
 			}
 		case '_':
-			result.WriteRune(' ') // Replace underscores with spaces
+			result.WriteRune(' ')
 		default:
 			result.WriteRune(r)
 		}
 	}
 
-	// Remove trailing orphaned opening brackets
 	resultStr := result.String()
 	for strings.HasSuffix(resultStr, "(") || strings.HasSuffix(resultStr, "[") {
 		resultStr = resultStr[:len(resultStr)-1]
 	}
 
-	return resultStr
+	return strings.TrimSpace(resultStr)
 }
 
-// generateNewFilename generates the new filename from metadata
 func generateNewFilename(metadata types.ParsedMetadata, extension string) string {
 	var result strings.Builder
-
 	if metadata.Authors != nil {
 		result.WriteString(*metadata.Authors)
 		result.WriteString(" - ")
 	}
-
 	result.WriteString(metadata.Title)
-
 	if metadata.Year != nil {
 		result.WriteString(fmt.Sprintf(" (%d)", *metadata.Year))
 	}
-
 	result.WriteString(extension)
 	return result.String()
 }
 
-// Helper function for path manipulation
 func filepathJoin(dir, file string) string {
 	return filepath.Join(dir, file)
 }

@@ -2,35 +2,36 @@ package cli
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 
-	"github.com/ebook-renamer/go/internal/scanner"
-	"github.com/ebook-renamer/go/internal/normalizer"
 	"github.com/ebook-renamer/go/internal/duplicates"
-	"github.com/ebook-renamer/go/internal/todo"
 	"github.com/ebook-renamer/go/internal/jsonoutput"
+	"github.com/ebook-renamer/go/internal/normalizer"
+	"github.com/ebook-renamer/go/internal/scanner"
+	"github.com/ebook-renamer/go/internal/todo"
 	"github.com/ebook-renamer/go/internal/types"
 	"github.com/spf13/cobra"
 )
 
 var (
-	pathArg            string
-	dryRunFlag         bool
-	maxDepthFlag       string
-	noRecursiveFlag    bool
-	extensionsFlag     string
-	noDeleteFlag       bool
-	todoFileFlag       string
-	logFileFlag        string
+	pathArg             string
+	dryRunFlag          bool
+	maxDepthFlag        string
+	noRecursiveFlag     bool
+	extensionsFlag      string
+	noDeleteFlag        bool
+	todoFileFlag        string
+	logFileFlag         string
 	preserveUnicodeFlag bool
-	fetchArxivFlag     bool
-	verboseFlag        bool
-	deleteSmallFlag    bool
-	jsonFlag           bool
+	fetchArxivFlag      bool
+	verboseFlag         bool
+	deleteSmallFlag     bool
+	jsonFlag            bool
 )
 
 var rootCmd = &cobra.Command{
@@ -64,6 +65,8 @@ func init() {
 }
 
 func Execute() error {
+	// Setup logging with timestamp
+	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
 	return rootCmd.Execute()
 }
 
@@ -139,6 +142,8 @@ func runEbookRenamer(cmd *cobra.Command, args []string) error {
 		Json:            jsonFlag,
 	}
 
+	log.Printf("Starting ebook renamer with config: %+v", config)
+
 	// Process files
 	return processFiles(config)
 }
@@ -152,19 +157,24 @@ func nilString(s string) *string {
 
 func processFiles(config *types.Config) error {
 	// Create scanner
-	s := scanner.New(config.Path, config.MaxDepth)
-	
+	s, err := scanner.New(config.Path, int(config.MaxDepth))
+	if err != nil {
+		return fmt.Errorf("failed to create scanner: %w", err)
+	}
+
 	// Scan for files
 	files, err := s.Scan()
 	if err != nil {
 		return fmt.Errorf("scan failed: %w", err)
 	}
+	log.Printf("Found %d files to process", len(files))
 
 	// Normalize filenames
 	normalized, err := normalizer.NormalizeFiles(files)
 	if err != nil {
 		return fmt.Errorf("normalization failed: %w", err)
 	}
+	log.Printf("Normalized %d files", len(normalized))
 
 	// Determine todo file path
 	todoFilePath := determineTodoFile(config.Path, config.TodoFile)
@@ -186,14 +196,14 @@ func processFiles(config *types.Config) error {
 				todoList.RemoveFileFromTodo(fileInfo.OriginalName)
 			} else {
 				if fileInfo.IsFailedDownload {
-					todoList.AddFailedDownload(&fileInfo)
+					todoList.AddFailedDownload(fileInfo)
 					todoItems = append(todoItems, types.TodoItem{
 						Category: "failed_download",
 						File:     fileInfo.OriginalName,
 						Message:  fmt.Sprintf("重新下载: %s (未完成下载)", fileInfo.OriginalName),
 					})
 				} else {
-					todoList.AddFailedDownload(&fileInfo)
+					todoList.AddFailedDownload(fileInfo)
 					todoItems = append(todoItems, types.TodoItem{
 						Category: "too_small",
 						File:     fileInfo.OriginalName,
@@ -202,7 +212,7 @@ func processFiles(config *types.Config) error {
 				}
 			}
 		} else {
-			todoList.AnalyzeFileIntegrity(&fileInfo)
+			todoList.AnalyzeFileIntegrity(fileInfo)
 		}
 	}
 
@@ -211,6 +221,7 @@ func processFiles(config *types.Config) error {
 	if err != nil {
 		return fmt.Errorf("duplicate detection failed: %w", err)
 	}
+	log.Printf("Detected %d duplicate groups", len(duplicateGroups))
 
 	// Sort todo items by category, then file for deterministic output (matching Rust)
 	sort.Slice(todoItems, func(i, j int) bool {
@@ -237,12 +248,12 @@ func processFiles(config *types.Config) error {
 			// Human-readable output
 			printHumanOutput(cleanFiles, duplicateGroups, filesToDelete, todoList)
 		}
-		
+
 		// Write todo.md even in dry-run mode
 		if err := todoList.Write(); err != nil {
 			return fmt.Errorf("todo write failed: %w", err)
 		}
-		
+
 		if !config.Json {
 			fmt.Println("\n✓ todo.md written (dry-run mode)")
 		}
@@ -267,16 +278,16 @@ func determineTodoFile(targetDir string, customPath *string) string {
 	return filepath.Join(targetDir, "todo.md")
 }
 
-func printHumanOutput(cleanFiles []types.FileInfo, duplicateGroups [][]string, filesToDelete []string, todoList *todo.TodoList) {
+func printHumanOutput(cleanFiles []*types.FileInfo, duplicateGroups [][]string, filesToDelete []string, todoList *todo.TodoList) {
 	fmt.Println("\n=== DRY RUN MODE ===")
-	
+
 	// Print renames
 	for _, fileInfo := range cleanFiles {
 		if fileInfo.NewName != nil {
 			fmt.Printf("RENAME: %s -> %s\n", fileInfo.OriginalName, *fileInfo.NewName)
 		}
 	}
-	
+
 	// Print duplicate deletions
 	for _, group := range duplicateGroups {
 		if len(group) > 1 {
@@ -290,7 +301,7 @@ func printHumanOutput(cleanFiles []types.FileInfo, duplicateGroups [][]string, f
 			}
 		}
 	}
-	
+
 	// Print small/corrupted deletions
 	if len(filesToDelete) > 0 {
 		fmt.Println("\nDELETE SMALL/CORRUPTED FILES:")
@@ -298,7 +309,7 @@ func printHumanOutput(cleanFiles []types.FileInfo, duplicateGroups [][]string, f
 			fmt.Printf("  DELETE: %s\n", path)
 		}
 	}
-	
+
 	// Print todo items
 	items := todoList.GetItems()
 	if len(items) > 0 {
@@ -309,16 +320,17 @@ func printHumanOutput(cleanFiles []types.FileInfo, duplicateGroups [][]string, f
 	}
 }
 
-func executeOperations(cleanFiles []types.FileInfo, duplicateGroups [][]string, filesToDelete []string, todoList *todo.TodoList, config *types.Config) error {
+func executeOperations(cleanFiles []*types.FileInfo, duplicateGroups [][]string, filesToDelete []string, todoList *todo.TodoList, config *types.Config) error {
 	// Execute renames
 	for _, fileInfo := range cleanFiles {
 		if fileInfo.NewName != nil {
 			if err := os.Rename(fileInfo.OriginalPath, fileInfo.NewPath); err != nil {
 				return fmt.Errorf("rename failed: %w", err)
 			}
+			log.Printf("Renamed: %s -> %s", fileInfo.OriginalName, *fileInfo.NewName)
 		}
 	}
-	
+
 	// Delete duplicates
 	if !config.NoDelete {
 		for _, group := range duplicateGroups {
@@ -328,12 +340,13 @@ func executeOperations(cleanFiles []types.FileInfo, duplicateGroups [][]string, 
 						if err := os.Remove(path); err != nil {
 							return fmt.Errorf("delete duplicate failed: %w", err)
 						}
+						log.Printf("Deleted duplicate: %s", path)
 					}
 				}
 			}
 		}
 	}
-	
+
 	// Delete small/corrupted files
 	if config.DeleteSmall && len(filesToDelete) > 0 {
 		fmt.Printf("\nDeleting %d small/corrupted files...\n", len(filesToDelete))
@@ -341,14 +354,16 @@ func executeOperations(cleanFiles []types.FileInfo, duplicateGroups [][]string, 
 			if err := os.Remove(path); err != nil {
 				return fmt.Errorf("delete small file failed: %w", err)
 			}
+			log.Printf("Deleted small/corrupted file: %s", path)
 			fmt.Printf("  Deleted: %s\n", path)
 		}
 	}
-	
+
 	// Write todo.md
 	if err := todoList.Write(); err != nil {
 		return err
 	}
-	
+	log.Printf("Wrote todo.md")
+
 	return nil
 }

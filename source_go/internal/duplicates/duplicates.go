@@ -13,15 +13,15 @@ import (
 
 // Allowed formats to keep
 var allowedExtensions = map[string]bool{
-	".pdf": true,
+	".pdf":  true,
 	".epub": true,
-	".txt": true,
+	".txt":  true,
 }
 
 // DetectDuplicates finds duplicate files based on MD5 hash
-func DetectDuplicates(files []types.FileInfo) ([][]string, []types.FileInfo, error) {
+func DetectDuplicates(files []*types.FileInfo) ([][]string, []*types.FileInfo, error) {
 	// Filter to only allowed formats first
-	var filteredFiles []types.FileInfo
+	var filteredFiles []*types.FileInfo
 	for _, file := range files {
 		if allowedExtensions[file.Extension] {
 			filteredFiles = append(filteredFiles, file)
@@ -29,7 +29,7 @@ func DetectDuplicates(files []types.FileInfo) ([][]string, []types.FileInfo, err
 	}
 
 	// Build hash map: file_hash -> list of file infos
-	hashMap := make(map[string][]types.FileInfo)
+	hashMap := make(map[string][]*types.FileInfo)
 
 	for _, fileInfo := range filteredFiles {
 		if !fileInfo.IsFailedDownload && !fileInfo.IsTooSmall {
@@ -50,10 +50,10 @@ func DetectDuplicates(files []types.FileInfo) ([][]string, []types.FileInfo, err
 		if len(fileInfos) > 1 {
 			// Multiple files with same hash - apply retention strategy
 			keptFile := selectFileToKeep(fileInfos)
-			
+
 			var groupPaths []string
 			groupPaths = append(groupPaths, keptFile.OriginalPath)
-			
+
 			for _, fileInfo := range fileInfos {
 				if fileInfo.OriginalPath != keptFile.OriginalPath {
 					duplicatePaths[fileInfo.OriginalPath] = true
@@ -66,7 +66,7 @@ func DetectDuplicates(files []types.FileInfo) ([][]string, []types.FileInfo, err
 	}
 
 	// Return only non-duplicate files (including filtered out formats)
-	var cleanFiles []types.FileInfo
+	var cleanFiles []*types.FileInfo
 	for _, file := range filteredFiles {
 		if !duplicatePaths[file.OriginalPath] {
 			cleanFiles = append(cleanFiles, file)
@@ -77,11 +77,11 @@ func DetectDuplicates(files []types.FileInfo) ([][]string, []types.FileInfo, err
 }
 
 // selectFileToKeep selects the file to keep based on priority: normalized > shortest path > newest
-func selectFileToKeep(files []types.FileInfo) types.FileInfo {
+func selectFileToKeep(files []*types.FileInfo) *types.FileInfo {
 	// Priority 1: Already normalized files (have new_name set)
-	var normalizedFiles []types.FileInfo
-	var allFiles []types.FileInfo
-	
+	var normalizedFiles []*types.FileInfo
+	var allFiles []*types.FileInfo
+
 	for _, file := range files {
 		allFiles = append(allFiles, file)
 		if file.NewName != nil {
@@ -98,12 +98,12 @@ func selectFileToKeep(files []types.FileInfo) types.FileInfo {
 	// Priority 2: Shortest path (fewest directory components) among candidates
 	type depthFile struct {
 		depth int
-		file  types.FileInfo
+		file  *types.FileInfo
 	}
-	
+
 	var candidatesWithDepth []depthFile
 	minDepth := int(^uint(0) >> 1) // Max int
-	
+
 	for _, file := range candidates {
 		depth := strings.Count(file.OriginalPath, string(filepath.Separator))
 		candidatesWithDepth = append(candidatesWithDepth, depthFile{depth, file})
@@ -111,9 +111,9 @@ func selectFileToKeep(files []types.FileInfo) types.FileInfo {
 			minDepth = depth
 		}
 	}
-	
+
 	// Filter to shallowest candidates
-	var shallowestCandidates []types.FileInfo
+	var shallowestCandidates []*types.FileInfo
 	for _, df := range candidatesWithDepth {
 		if df.depth == minDepth {
 			shallowestCandidates = append(shallowestCandidates, df.file)
@@ -153,7 +153,7 @@ func computeMD5(filePath string) (string, error) {
 }
 
 // DetectNameVariants groups files by normalized name (treating (1), (2), etc. as variants)
-func DetectNameVariants(files []types.FileInfo) [][]int {
+func DetectNameVariants(files []*types.FileInfo) [][]int {
 	// Group files by normalized name (treating (1), (2), etc. as variants)
 	nameGroups := make(map[string][]int)
 
@@ -182,7 +182,7 @@ func stripVariantSuffix(filename string) string {
 	if dotIdx := strings.LastIndex(filename, "."); dotIdx != -1 {
 		namePart := filename[:dotIdx]
 		extPart := filename[dotIdx:]
-		
+
 		// Remove variant suffix from name part
 		if strings.HasSuffix(namePart, ")") {
 			// Check if it matches pattern " (n)"
@@ -205,7 +205,7 @@ func stripVariantSuffix(filename string) string {
 				}
 			}
 		}
-		
+
 		return namePart + extPart
 	} else {
 		// No extension, just check for variant suffix

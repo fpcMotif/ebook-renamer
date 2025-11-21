@@ -523,35 +523,60 @@ fn clean_orphaned_brackets(s: &str) -> String {
     }
 
     // Remove unclosed parentheses/brackets and their content
-    // Build result by skipping unclosed sections
+    // Build result by skipping unclosed sections, but preserve closed pairs after them
     if !paren_starts.is_empty() || !bracket_starts.is_empty() {
         let mut new_result = String::new();
         let mut skip_ranges: Vec<(usize, usize)> = Vec::new();
         
-        // Mark ranges to skip (unclosed brackets and their content)
+        // For unclosed brackets, find where they end
+        // Check if there are closed pairs nested inside that should be preserved
         for &start_pos in &paren_starts {
-            // Find end: either end of string or next whitespace/punctuation
-            let mut end_pos = result.len();
-            let remaining = &result[start_pos..];
-            for (idx, ch) in remaining.char_indices() {
-                if ch == ' ' || ch == '-' || ch == ':' || ch == ',' || ch == ';' || ch == '.' {
-                    end_pos = start_pos + idx;
-                    break;
+            // Look for nested closed pairs inside the unclosed paren
+            // Example: "(Publisher info (Author Name)" - the inner "(Author Name)" should be preserved
+            let after_start = &result[start_pos + 1..];
+            let mut nested_level = 0;
+            let mut found_nested_closed = false;
+            let mut nested_start = None;
+            
+            for (idx, ch) in after_start.char_indices() {
+                match ch {
+                    '(' => {
+                        if nested_level == 0 {
+                            nested_start = Some(start_pos + 1 + idx);
+                        }
+                        nested_level += 1;
+                    }
+                    ')' => {
+                        if nested_level == 1 && nested_start.is_some() {
+                            // Found a closing paren for a nested pair
+                            // Check if there's content between nested_start and this closing paren
+                            let nested_start_pos = nested_start.unwrap();
+                            let content_between = &result[nested_start_pos + 1..start_pos + 1 + idx];
+                            if !content_between.trim().is_empty() {
+                                // This is a valid nested closed pair, preserve it
+                                // Remove only the outer unclosed paren and content before nested pair
+                                skip_ranges.push((start_pos, nested_start_pos));
+                                found_nested_closed = true;
+                                break;
+                            }
+                        }
+                        if nested_level > 0 {
+                            nested_level -= 1;
+                        }
+                    }
+                    _ => {}
                 }
             }
-            skip_ranges.push((start_pos, end_pos));
+            
+            // If no nested closed pair found, remove from unclosed paren to end
+            if !found_nested_closed {
+                skip_ranges.push((start_pos, result.len()));
+            }
         }
         
         for &start_pos in &bracket_starts {
-            let mut end_pos = result.len();
-            let remaining = &result[start_pos..];
-            for (idx, ch) in remaining.char_indices() {
-                if ch == ' ' || ch == '-' || ch == ':' || ch == ',' || ch == ';' || ch == '.' {
-                    end_pos = start_pos + idx;
-                    break;
-                }
-            }
-            skip_ranges.push((start_pos, end_pos));
+            // Similar logic for brackets
+            skip_ranges.push((start_pos, result.len()));
         }
         
         // Sort and merge overlapping ranges
@@ -904,6 +929,78 @@ mod tests {
         assert_eq!(metadata.authors, Some("B. R. Tennison".to_string()));
         assert_eq!(metadata.title, "Sheaf Theory");
         assert!(!metadata.title.contains("London Mathematical"));
+    }
+
+    #[test]
+    fn test_unclosed_parenthesis_at_end() {
+        // Unclosed parenthesis at end should be removed with its content
+        let metadata = parse_filename(
+            "Some Book Title (Unclosed content.pdf",
+            ".pdf"
+        ).unwrap();
+        assert_eq!(metadata.title, "Some Book Title");
+        assert!(!metadata.title.contains("Unclosed"));
+        assert!(!metadata.title.contains("("));
+    }
+
+    #[test]
+    fn test_unclosed_bracket_at_end() {
+        // Unclosed bracket at end should be removed with its content
+        let metadata = parse_filename(
+            "Some Book Title [Unclosed bracket.pdf",
+            ".pdf"
+        ).unwrap();
+        assert_eq!(metadata.title, "Some Book Title");
+        assert!(!metadata.title.contains("Unclosed"));
+        assert!(!metadata.title.contains("["));
+    }
+
+    #[test]
+    fn test_mixed_closed_and_unclosed() {
+        // Mixed closed and unclosed parentheses
+        let metadata = parse_filename(
+            "Title (Closed) (Unclosed content.pdf",
+            ".pdf"
+        ).unwrap();
+        // Should keep closed if it's author, remove unclosed
+        assert_eq!(metadata.title, "Title");
+        assert!(!metadata.title.contains("Unclosed"));
+    }
+
+    #[test]
+    fn test_multiple_unclosed_parentheses() {
+        // Multiple unclosed parentheses
+        let result = clean_orphaned_brackets("Title (First (Second");
+        assert_eq!(result, "Title");
+        assert!(!result.contains("First"));
+        assert!(!result.contains("Second"));
+    }
+
+    #[test]
+    fn test_orphaned_closing_bracket() {
+        // Orphaned closing bracket should be removed
+        let result = clean_orphaned_brackets("Title ) with valid ( content )");
+        assert_eq!(result, "Title  with valid ( content )");
+        // The orphaned ) should be removed
+        assert!(!result.contains("Title )"));
+    }
+
+    #[test]
+    fn test_unclosed_with_author() {
+        // Unclosed parenthesis before author should be removed, but preserve closed author pair
+        // This is a complex case: "Book Title (Publisher info (Author Name).pdf"
+        // The first paren is unclosed, but there's a closed pair inside it
+        // We should remove the unclosed paren and its content, preserving the inner closed pair
+        let metadata = parse_filename(
+            "Book Title (Publisher info (Author Name).pdf",
+            ".pdf"
+        ).unwrap();
+        // The inner closed pair "(Author Name)" should be preserved and recognized as author
+        // But the unclosed outer paren should be removed
+        // Expected: Title = "Book Title", Author = "Author Name"
+        assert_eq!(metadata.authors, Some("Author Name".to_string()));
+        assert_eq!(metadata.title, "Book Title");
+        assert!(!metadata.title.contains("Publisher"));
     }
 }
 

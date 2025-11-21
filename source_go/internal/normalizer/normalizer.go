@@ -84,16 +84,22 @@ func parseFilename(filename, extension string) (types.ParsedMetadata, error) {
 	// MUST happen BEFORE author parsing
 	base = cleanNoiseSources(base)
 
-	// Step 5: Remove duplicate markers: -2, -3, (1), (2)
+	// Step 5: Clean extended noise (editions, versions, etc.)
+	base = cleanExtendedNoise(base)
+
+	// Step 6: Remove duplicate markers: -2, -3, (1), (2)
 	base = removeDuplicateMarkers(base)
 
-	// Step 6: Extract year FIRST
+	// Step 7: Extract year FIRST
 	year := extractYear(base)
 
-	// Step 7: Remove parentheticals
+	// Step 8: Remove parentheticals
 	base = cleanParentheticals(base, year)
 
-	// Step 8: Parse author and title
+	// Step 9: First bracket validation
+	base = validateAndFixBrackets(base)
+
+	// Step 10: Parse author and title
 	authors, title := smartParseAuthorTitle(base)
 
 	return types.ParsedMetadata{
@@ -127,19 +133,19 @@ func removeSeriesPrefixes(s string) string {
 
 func cleanNoiseSources(s string) string {
 	patterns := []string{
-		// Z-Library variants
-		`\s*[-\(]?\s*[zZ]-?Library\s*[)\.]?`,
-		`\s*\([zZ]-?Library\)`,
-		`\s*-\s*[zZ]-?Library`,
+		// Z-Library variants (case insensitive)
+		`(?i)\s*[-\(]?\s*[zZ]-?Library\s*[)\.]?`,
+		`(?i)\s*\([zZ]-?Library\)`,
+		`(?i)\s*-\s*[zZ]-?Library`,
 		// libgen variants
-		`\s*[-\(]?\s*libgen(?:\.li)?\s*[)\.]?`,
-		`\s*\(libgen(?:\.li)?\)`,
-		`\s*-\s*libgen(?:\.li)?`,
+		`(?i)\s*[-\(]?\s*libgen(?:\.li)?\s*[)\.]?`,
+		`(?i)\s*\(libgen(?:\.li)?\)`,
+		`(?i)\s*-\s*libgen(?:\.li)?`,
 		// Anna's Archive variants
-		`Anna'?s?\s*Archive`,
-		`\s*[-\(]?\s*Anna'?s?\s+Archive\s*[)\.]?`,
-		`\s*\(Anna'?s?\s+Archive\)`,
-		`\s*-\s*Anna'?s?\s+Archive`,
+		`(?i)Anna'?s?\s*Archive`,
+		`(?i)\s*[-\(]?\s*Anna'?s?\s+Archive\s*[)\.]?`,
+		`(?i)\s*\(Anna'?s?\s+Archive\)`,
+		`(?i)\s*-\s*Anna'?s?\s+Archive`,
 		// Hash patterns
 		`\s*--\s*[a-f0-9]{32}\s*(?:--)?`,
 		`\s*--\s*\d{10,13}\s*(?:--)?`,
@@ -158,6 +164,43 @@ func cleanNoiseSources(s string) string {
 		if result == before {
 			break
 		}
+	}
+	return strings.TrimSpace(result)
+}
+
+func cleanExtendedNoise(s string) string {
+	// Remove edition, version, language, and quality markers
+	patterns := []string{
+		// Edition patterns
+		`(?i)\s*-?\s*\d+(?:st|nd|rd|th)\s+[Ee]dition\b`,
+		`(?i)\s*-?\s*\([Rr]evised\s+[Ee]dition\)`,
+		`(?i)\s*-?\s*\([Ee]dition\s+\d+\)`,
+		// Reprint patterns
+		`(?i)\s*-?\s*\([Rr]eprint\s+\d{4}\)`,
+		// Version patterns
+		`(?i)\s*-?\s*[vV](?:er(?:sion)?)?\s*\d+(?:\.\d+)*`,
+		// Language annotations
+		`(?i)\s*\([Ee]nglish(?:\s+[Vv]ersion)?\)`,
+		`(?i)\s*\([Cc]hinese(?:\s+[Vv]ersion)?\)`,
+		`\s*\(中文版\)`,
+		`\s*\(英文版\)`,
+		// Quality markers
+		`(?i)\s*-?\s*\b(?:OCR|[Ss]canned|[Ww]atermarked|[Bb]ookmarked)\b`,
+		// ArXiv IDs
+		`(?i)\s*-?\s*arXiv:\d{4}\.\d{4,5}(?:v\d+)?`,
+		// DOI
+		`(?i)\s*-?\s*doi:\s*[\w\./]+`,
+		// ISBN in text
+		`(?i)\s*-?\s*ISBN[-:\s]*\d[\d\-]{8,}`,
+		// Duplicate markers
+		`(?i)\s*[-_]\s*[Cc]opy\s+\d+`,
+		`\s*\(\d{1,2}\)\s*(?=\.|$)`,
+	}
+
+	result := s
+	for _, p := range patterns {
+		re := regexp.MustCompile(p)
+		result = re.ReplaceAllString(result, "")
 	}
 	return strings.TrimSpace(result)
 }
@@ -379,18 +422,37 @@ func cleanTitle(s string) string {
 }
 
 func isPublisherOrSeriesInfo(s string) bool {
+	// Case-insensitive matching
+	sLower := strings.ToLower(s)
+	
 	publisherKeywords := []string{
-		"Press", "Publishing", "Academic Press", "Springer", "Cambridge", "Oxford", "MIT Press",
-		"Series", "Textbook Series", "Graduate Texts", "Graduate Studies", "Lecture Notes",
-		"Pure and Applied", "Mathematics", "Foundations of", "Monographs", "Studies", "Collection",
-		"Textbook", "Edition", "Vol.", "Volume", "No.", "Part", "理工", "出版社", "の",
-		"Z-Library", "libgen", "Anna's Archive",
+		"press", "publishing", "publisher",
+		"springer", "cambridge", "oxford", "mit press", "elsevier",
+		"wiley", "pearson", "academic press",
+		"series", "textbook series", "lecture notes",
+		"graduate texts", "graduate studies",
+		"pure and applied", "foundations of",
+		"monographs", "studies", "collection",
+		"textbook", "edition", "revised", "reprint",
+		"vol.", "volume", "no.", "part",
+		// Chinese keywords
+		"出版社", "出版", "教材", "系列",
+		"丛书", "讲义", "版", "修订版",
+		// Japanese
+		"の",
+		"z-library", "libgen", "anna's archive",
 	}
 
 	for _, k := range publisherKeywords {
-		if strings.Contains(s, k) {
+		if strings.Contains(sLower, k) {
 			return true
 		}
+	}
+	
+	// Check for edition patterns
+	editionRe := regexp.MustCompile(`(?i)\d+(?:st|nd|rd|th)\s+ed(?:ition)?`)
+	if editionRe.MatchString(sLower) {
+		return true
 	}
 
 	// Detect hash patterns
@@ -434,6 +496,7 @@ func cleanOrphanedBrackets(s string) string {
 				openParens--
 				result.WriteRune(r)
 			}
+			// Skip orphaned closing paren
 		case '[':
 			openBrackets++
 			result.WriteRune(r)
@@ -442,6 +505,7 @@ func cleanOrphanedBrackets(s string) string {
 				openBrackets--
 				result.WriteRune(r)
 			}
+			// Skip orphaned closing bracket
 		case '_':
 			result.WriteRune(' ')
 		default:
@@ -450,11 +514,43 @@ func cleanOrphanedBrackets(s string) string {
 	}
 
 	resultStr := result.String()
+	// Remove trailing orphaned opening brackets
 	for strings.HasSuffix(resultStr, "(") || strings.HasSuffix(resultStr, "[") {
 		resultStr = resultStr[:len(resultStr)-1]
 	}
 
 	return strings.TrimSpace(resultStr)
+}
+
+func validateAndFixBrackets(s string) string {
+	// Count unmatched opening brackets
+	openCount := strings.Count(s, "(") - strings.Count(s, ")")
+	
+	if openCount > 0 {
+		result := s
+		remaining := openCount
+		
+		// Remove orphaned opening brackets from the end
+		for remaining > 0 {
+			lastOpen := strings.LastIndex(result, "(")
+			if lastOpen == -1 {
+				break
+			}
+			
+			// Check if this '(' has a matching ')' after it
+			after := result[lastOpen+1:]
+			if !strings.Contains(after, ")") {
+				// This is an orphaned opening bracket, remove it
+				result = result[:lastOpen] + result[lastOpen+1:]
+				remaining--
+			} else {
+				break
+			}
+		}
+		return strings.TrimSpace(result)
+	}
+	
+	return s
 }
 
 func generateNewFilename(metadata types.ParsedMetadata, extension string) string {

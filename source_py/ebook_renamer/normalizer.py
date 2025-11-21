@@ -59,19 +59,25 @@ class Normalizer:
         # Step 2: Remove series prefixes (must be early)
         base = self._remove_series_prefixes(base)
         
-        # Step 3: Clean noise sources
-        base = self._clean_noise_sources(base)
-        
-        # Step 4: Remove ALL bracketed annotations
+        # Step 3: Remove ALL bracketed annotations
         base = self.BRACKET_REGEX.sub("", base)
         
-        # Step 5: Extract year FIRST
+        # Step 4: Clean noise sources
+        base = self._clean_noise_sources(base)
+        
+        # Step 5: Clean extended noise (editions, versions, language tags, etc.)
+        base = self._clean_extended_noise(base)
+        
+        # Step 6: Extract year FIRST
         year = self._extract_year(base)
         
-        # Step 6: Remove parentheticals
+        # Step 7: Remove parentheticals
         base = self._clean_parentheticals(base, year)
         
-        # Step 7: Parse author and title
+        # Step 8: First bracket validation
+        base = self._validate_and_fix_brackets(base)
+        
+        # Step 9: Parse author and title
         authors, title = self._smart_parse_author_title(base)
         
         return ParsedMetadata(
@@ -100,6 +106,7 @@ class Normalizer:
         return result.strip()
 
     def _clean_noise_sources(self, s: str) -> str:
+        """Remove source markers and hash patterns."""
         patterns = [
             r'\s*[-\(]?\s*[zZ]-?Library(?:\.pdf)?\s*[)\.]?',
             r'\s*[-\(]?\s*libgen(?:\.li)?(?:\.pdf)?\s*[)\.]?',
@@ -112,7 +119,42 @@ class Normalizer:
         ]
         result = s
         for pattern in patterns:
-            result = re.sub(pattern, "", result)
+            result = re.sub(pattern, "", result, flags=re.IGNORECASE)
+        return result.strip()
+    
+    def _clean_extended_noise(self, s: str) -> str:
+        """Remove edition, version, language, and quality markers."""
+        patterns = [
+            # Edition patterns
+            r'\s*-?\s*\d+(?:st|nd|rd|th)\s+[Ee]dition\b',
+            r'\s*-?\s*\([Rr]evised\s+[Ee]dition\)',
+            r'\s*-?\s*\([Ee]dition\s+\d+\)',
+            # Reprint patterns
+            r'\s*-?\s*\([Rr]eprint\s+\d{4}\)',
+            # Version patterns
+            r'\s*-?\s*[vV](?:er(?:sion)?)?\s*\d+(?:\.\d+)*',
+            # Language annotations
+            r'\s*\([Ee]nglish(?:\s+[Vv]ersion)?\)',
+            r'\s*\([Cc]hinese(?:\s+[Vv]ersion)?\)',
+            r'\s*\(中文版\)',
+            r'\s*\(英文版\)',
+            # Quality markers
+            r'\s*-?\s*\b(?:OCR|[Ss]canned|[Ww]atermarked|[Bb]ookmarked)\b',
+            # ArXiv IDs
+            r'\s*-?\s*arXiv:\d{4}\.\d{4,5}(?:v\d+)?',
+            # DOI
+            r'\s*-?\s*doi:\s*[\w\./]+',
+            # ISBN in text
+            r'\s*-?\s*ISBN[-:\s]*\d[\d\-]{8,}',
+            # Duplicate markers
+            r'\s*[-_]\s*[Cc]opy\s+\d+',
+            r'\s*\(\d{1,2}\)\s*(?=\.|$)',
+        ]
+        
+        result = s
+        for pattern in patterns:
+            result = re.sub(pattern, '', result, flags=re.IGNORECASE)
+        
         return result.strip()
 
     def _extract_year(self, s: str) -> Optional[int]:
@@ -239,16 +281,33 @@ class Normalizer:
         return s.strip()
 
     def _is_publisher_or_series_info(self, s: str) -> bool:
+        """Check if string contains publisher/series keywords (case-insensitive)."""
+        s_lower = s.lower()
+        
         publisher_keywords = [
-            "Press", "Publishing", "Academic Press", "Springer", "Cambridge", "Oxford", "MIT Press",
-            "Series", "Textbook Series", "Graduate Texts", "Graduate Studies", "Lecture Notes",
-            "Pure and Applied", "Mathematics", "Foundations of", "Monographs", "Studies", "Collection",
-            "Textbook", "Edition", "Vol.", "Volume", "No.", "Part", "理工", "出版社", "の",
+            "press", "publishing", "publisher",
+            "springer", "cambridge", "oxford", "mit press", "elsevier",
+            "wiley", "pearson", "academic press",
+            "series", "textbook series", "lecture notes",
+            "graduate texts", "graduate studies",
+            "pure and applied", "foundations of",
+            "monographs", "studies", "collection",
+            "textbook", "edition", "revised", "reprint",
+            "vol.", "volume", "no.", "part",
+            # Chinese keywords
+            "出版社", "出版", "教材", "系列",
+            "丛书", "讲义", "版", "修订版",
+            # Japanese
+            "の",
         ]
         
-        for k in publisher_keywords:
-            if k in s:
+        for keyword in publisher_keywords:
+            if keyword in s_lower:
                 return True
+        
+        # Check for edition patterns: "2nd ed", "3rd edition", etc.
+        if re.search(r'\d+(?:st|nd|rd|th)\s+ed(?:ition)?', s_lower):
+            return True
                 
         # Check for series info (mostly non-letters with numbers)
         has_numbers = any(c.isdigit() for c in s)
@@ -260,6 +319,7 @@ class Normalizer:
         return False
 
     def _clean_orphaned_brackets(self, s: str) -> str:
+        """Remove orphaned brackets and replace underscores."""
         result = []
         open_parens = 0
         open_brackets = 0
@@ -272,6 +332,7 @@ class Normalizer:
                 if open_parens > 0:
                     open_parens -= 1
                     result.append(char)
+                # Skip orphaned closing paren
             elif char == '[':
                 open_brackets += 1
                 result.append(char)
@@ -279,16 +340,42 @@ class Normalizer:
                 if open_brackets > 0:
                     open_brackets -= 1
                     result.append(char)
+                # Skip orphaned closing bracket
             elif char == '_':
                 result.append(' ')
             else:
                 result.append(char)
         
         result_str = ''.join(result)
+        # Remove trailing orphaned opening brackets
         while result_str.endswith('(') or result_str.endswith('['):
             result_str = result_str[:-1]
             
-        return result_str
+        return result_str.strip()
+    
+    def _validate_and_fix_brackets(self, s: str) -> str:
+        """Ensure all brackets are properly paired."""
+        # Count unmatched opening brackets
+        open_count = s.count('(') - s.count(')')
+        
+        if open_count > 0:
+            # Remove orphaned opening brackets from the end
+            result = s
+            while open_count > 0 and '(' in result:
+                # Find and remove the last unmatched '('
+                last_open = result.rfind('(')
+                if last_open != -1:
+                    # Check if this '(' has a matching ')'
+                    after = result[last_open+1:]
+                    if ')' not in after:
+                        # This is an orphaned opening bracket, remove it
+                        result = result[:last_open] + result[last_open+1:]
+                        open_count -= 1
+                    else:
+                        break
+            return result.strip()
+        
+        return s
 
     def _generate_new_filename(self, metadata: ParsedMetadata, extension: str) -> str:
         parts = []

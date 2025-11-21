@@ -50,21 +50,27 @@ fn parse_filename(filename: &str, extension: &str) -> Result<ParsedMetadata> {
     // MUST happen BEFORE author parsing to avoid treating (Z-Library) as author
     base = clean_noise_sources(&base);
 
-    // Step 5: Remove duplicate markers: -2, -3, (1), (2), etc.
+    // Step 5: Clean extended noise (editions, versions, language tags, etc.)
+    base = clean_extended_noise(&base);
+
+    // Step 6: Remove duplicate markers: -2, -3, (1), (2), etc.
     // But NOT years like (1978) or -1978
     // These can appear at the end OR before a year in parens
     base = Regex::new(r"[-\s]*\(\d{1,2}\)\s*$").unwrap().replace(&base, "").to_string();  // (1), (2) at end
     base = Regex::new(r"-\d{1,2}\s*$").unwrap().replace(&base, "").to_string();  // -2, -3 at end
     base = Regex::new(r"-\d{1,2}\s+\(").unwrap().replace(&base, " (").to_string();  // -2 before (year)
 
-    // Step 6: Extract year FIRST (most reliable)
+    // Step 7: Extract year FIRST (most reliable)
     let year = extract_year(&base);
 
-    // Step 7: Remove ALL parenthetical content that contains year or publisher info
+    // Step 8: Remove ALL parenthetical content that contains year or publisher info
     // Keep only author names in parens if at the end
     base = clean_parentheticals(&base, year);
 
-    // Step 8: Parse author and title with smart pattern matching
+    // Step 9: First bracket validation
+    base = validate_and_fix_brackets(&base);
+
+    // Step 10: Parse author and title with smart pattern matching
     let (authors, title) = smart_parse_author_title(&base);
 
     Ok(ParsedMetadata {
@@ -107,18 +113,18 @@ fn clean_noise_sources(s: &str) -> String {
     // Includes: Z-Library, libgen, Anna's Archive, hashes, and ISBN-like patterns
     let patterns = [
         // Z-Library variants
-        r"\s*[-\(]?\s*[zZ]-?Library\s*[)\.]?",
-        r"\s*\([zZ]-?Library\)",
-        r"\s*-\s*[zZ]-?Library",
+        r"(?i)\s*[-\(]?\s*[zZ]-?Library\s*[)\.]?",
+        r"(?i)\s*\([zZ]-?Library\)",
+        r"(?i)\s*-\s*[zZ]-?Library",
         // libgen variants
-        r"\s*[-\(]?\s*libgen(?:\.li)?\s*[)\.]?",
-        r"\s*\(libgen(?:\.li)?\)",
-        r"\s*-\s*libgen(?:\.li)?",
+        r"(?i)\s*[-\(]?\s*libgen(?:\.li)?\s*[)\.]?",
+        r"(?i)\s*\(libgen(?:\.li)?\)",
+        r"(?i)\s*-\s*libgen(?:\.li)?",
         // Anna's Archive variants (including stuck to other words)
-        r"Anna'?s?\s*Archive",  // Catches "Anna's Archive" or "AnnasArchive" or "AnnaArchive"
-        r"\s*[-\(]?\s*Anna'?s?\s+Archive\s*[)\.]?",
-        r"\s*\(Anna'?s?\s+Archive\)",
-        r"\s*-\s*Anna'?s?\s+Archive",
+        r"(?i)Anna'?s?\s*Archive",  // Catches "Anna's Archive" or "AnnasArchive" or "AnnaArchive"
+        r"(?i)\s*[-\(]?\s*Anna'?s?\s+Archive\s*[)\.]?",
+        r"(?i)\s*\(Anna'?s?\s+Archive\)",
+        r"(?i)\s*-\s*Anna'?s?\s+Archive",
         // Hash patterns (32 hex chars - MD5/SHA hashes)
         r"\s*--\s*[a-f0-9]{32}\s*(?:--)?",
         // ISBN-like patterns (10-13 digits)
@@ -140,6 +146,44 @@ fn clean_noise_sources(s: &str) -> String {
         if result == before {
             break;
         }
+    }
+    
+    result.trim().to_string()
+}
+
+fn clean_extended_noise(s: &str) -> String {
+    // Remove edition, version, language, and quality markers
+    let patterns = [
+        // Edition patterns
+        r"(?i)\s*-?\s*\d+(?:st|nd|rd|th)\s+[Ee]dition\b",
+        r"(?i)\s*-?\s*\([Rr]evised\s+[Ee]dition\)",
+        r"(?i)\s*-?\s*\([Ee]dition\s+\d+\)",
+        // Reprint patterns
+        r"(?i)\s*-?\s*\([Rr]eprint\s+\d{4}\)",
+        // Version patterns
+        r"(?i)\s*-?\s*[vV](?:er(?:sion)?)?\s*\d+(?:\.\d+)*",
+        // Language annotations
+        r"(?i)\s*\([Ee]nglish(?:\s+[Vv]ersion)?\)",
+        r"(?i)\s*\([Cc]hinese(?:\s+[Vv]ersion)?\)",
+        r"\s*\(中文版\)",
+        r"\s*\(英文版\)",
+        // Quality markers
+        r"(?i)\s*-?\s*\b(?:OCR|[Ss]canned|[Ww]atermarked|[Bb]ookmarked)\b",
+        // ArXiv IDs
+        r"(?i)\s*-?\s*arXiv:\d{4}\.\d{4,5}(?:v\d+)?",
+        // DOI
+        r"(?i)\s*-?\s*doi:\s*[\w\./]+",
+        // ISBN in text
+        r"(?i)\s*-?\s*ISBN[-:\s]*\d[\d\-]{8,}",
+        // Duplicate markers
+        r"(?i)\s*[-_]\s*[Cc]opy\s+\d+",
+        r"\s*\(\d{1,2}\)\s*(?=\.|$)",
+    ];
+    
+    let mut result = s.to_string();
+    for pattern in &patterns {
+        let re = Regex::new(pattern).unwrap();
+        result = re.replace_all(&result, "").to_string();
     }
     
     result.trim().to_string()
@@ -361,45 +405,66 @@ fn clean_author_name(s: &str) -> String {
 }
 
 fn is_publisher_or_series_info(s: &str) -> bool {
-    // Common publisher/series keywords
+    // Common publisher/series keywords (case-insensitive matching)
+    let s_lower = s.to_lowercase();
+    
     let publisher_keywords = [
-        "Press",
-        "Publishing",
-        "Academic Press",
-        "Springer",
-        "Cambridge",
-        "Oxford",
-        "MIT Press",
-        "Series",
-        "Textbook Series",
-        "Graduate Texts",
-        "Graduate Studies",
-        "Lecture Notes",
-        "Pure and Applied",
-        "Mathematics",
-        "Foundations of",
-        "Monographs",
-        "Studies",
-        "Collection",
-        "Textbook",
-        "Edition",
-        "Vol.",
-        "Volume",
-        "No.",
-        "Part",
-        "理工",
+        "press",
+        "publishing",
+        "publisher",
+        "springer",
+        "cambridge",
+        "oxford",
+        "mit press",
+        "elsevier",
+        "wiley",
+        "pearson",
+        "academic press",
+        "series",
+        "textbook series",
+        "lecture notes",
+        "graduate texts",
+        "graduate studies",
+        "pure and applied",
+        "foundations of",
+        "monographs",
+        "studies",
+        "collection",
+        "textbook",
+        "edition",
+        "revised",
+        "reprint",
+        "vol.",
+        "volume",
+        "no.",
+        "part",
+        // Chinese keywords
         "出版社",
+        "出版",
+        "教材",
+        "系列",
+        "丛书",
+        "讲义",
+        "版",
+        "修订版",
+        // Japanese
         "の",  // Japanese "no" (of)
-        "Z-Library",
+        "z-library",
         "libgen",
-        "Anna's Archive",
+        "anna's archive",
     ];
     
     // If contains publisher keywords, it's likely publisher info
     for keyword in &publisher_keywords {
-        if s.contains(keyword) {
+        if s_lower.contains(keyword) {
             return true;
         }
+    }
+    
+    // Check for edition patterns: "2nd ed", "3rd edition", etc.
+    let re_edition = Regex::new(r"(?i)\d+(?:st|nd|rd|th)\s+ed(?:ition)?").unwrap();
+    if re_edition.is_match(&s_lower) {
+        return true;
     }
     
     // Detect hash patterns: 8+ hex chars or 16+ alphanumeric
@@ -496,6 +561,36 @@ fn clean_orphaned_brackets(s: &str) -> String {
     }
 
     result.trim().to_string()
+}
+
+fn validate_and_fix_brackets(s: &str) -> String {
+    // Count unmatched opening brackets
+    let open_count = s.matches('(').count() as i32 - s.matches(')').count() as i32;
+    
+    if open_count > 0 {
+        let mut result = s.to_string();
+        let mut remaining = open_count;
+        
+        // Remove orphaned opening brackets from the end
+        while remaining > 0 {
+            if let Some(last_open) = result.rfind('(') {
+                // Check if this '(' has a matching ')' after it
+                let after = &result[last_open + 1..];
+                if !after.contains(')') {
+                    // This is an orphaned opening bracket, remove it
+                    result.remove(last_open);
+                    remaining -= 1;
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        return result.trim().to_string();
+    }
+    
+    s.to_string()
 }
 
 fn generate_new_filename(metadata: &ParsedMetadata, extension: &str) -> String {

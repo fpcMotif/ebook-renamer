@@ -48,20 +48,38 @@ Examples:
 - `[Graduate Texts in Mathematics]` → remove
 - Any content in square brackets `[...]`
 
-#### Publisher/Series Info (Remove ALL)
+#### Publisher/Series Info (Remove ALL - **Case Insensitive**)
 - `(Pure and Applied Mathematics (Academic Press))` → remove
 - `(Springer)` → remove
 - `(Cambridge University Press)` → remove
+- `(springer press)` → remove (lowercase also detected)
+- `(TEXTBOOK SERIES)` → remove (uppercase also detected)
 - `(Foundations of Computer Science)` → remove
 - Any parenthetical containing publisher keywords
 
-#### Source Markers (Remove ALL)
-- `- Z-Library`
-- `- libgen.li`
-- `- Anna's Archive`
-- `(Z-Library)`
-- `(libgen)`
+#### Source Markers (Remove ALL - **Case Insensitive**)
+- `- Z-Library`, `- z-library`, `- Z-LIBRARY`
+- `- libgen.li`, `- LIBGEN`
+- `- Anna's Archive`, `- anna's archive`
+- `(Z-Library)`, `(z-Library)`
+- `(libgen)`, `(LIBGEN)`
 - Any variation of library/source names
+
+#### Edition and Version Info (Remove ALL - **NEW**)
+- `2nd Edition`, `3rd edition` → remove
+- `(Revised Edition)` → remove
+- `v1.0`, `Version 2` → remove
+- `(Reprint 2020)` → remove
+
+#### Language and Quality Markers (Remove ALL - **NEW**)
+- `(English Version)`, `(Chinese Version)` → remove
+- `(中文版)`, `(英文版)` → remove
+- `OCR`, `Scanned`, `Watermarked` → remove
+
+#### Academic Identifiers (Remove ALL - **NEW**)
+- `arXiv:1234.5678` → remove
+- `doi:10.1234/example` → remove
+- `ISBN-123-456-789` → remove
 
 #### Trailing ID Noise (Remove ALL)
 - Amazon ASINs: `-B0F5TFL6ZQ` → remove
@@ -69,26 +87,43 @@ Examples:
 - Pattern: `[-_]` followed by 8+ alphanumeric characters at end of filename
 - Only strip if it appears **after** the title/author portion
 
+#### Duplicate Markers (Remove ALL)
+- `Copy 1`, `Copy 2` → remove
+- `(1)`, `(2)` at end → remove
+- `-2`, `-3` at end → remove
+
 #### Other Patterns to Remove
 - `(auth.)` or `(Auth.)` → remove
 - `.download` suffix → remove
 - Multiple spaces → single space
 - Leading/trailing punctuation (dash, colon, comma, semicolon, period)
+- **Orphaned brackets** → removed or paired correctly
 
-### 4. Publisher/Series Detection Keywords
+### 4. Publisher/Series Detection Keywords (**Case Insensitive**)
 
 If parenthetical content contains any of these keywords, remove it:
 
 ```
-Press, Publishing, Academic Press, Springer, Cambridge, Oxford, MIT Press,
-Series, Graduate Texts, Graduate Studies, Lecture Notes, Pure and Applied,
-Mathematics, Foundations of, Monographs, Studies, Collection, Textbook,
-Edition, Vol., Volume, No., Part
+press, publishing, publisher,
+springer, cambridge, oxford, mit press, elsevier, wiley, pearson,
+series, textbook series, lecture notes,
+graduate texts, graduate studies,
+pure and applied, foundations of,
+monographs, studies, collection,
+textbook, edition, revised, reprint,
+vol., volume, no., part,
+出版社, 出版, 教材, 系列, 丛书, 讲义, 版, 修订版  (Chinese)
+の  (Japanese)
 ```
+
+**Edition Pattern Detection:**
+- `2nd ed`, `3rd edition`, `1st Edition` → automatically detected
+- Pattern: `\d+(st|nd|rd|th)\s+ed(ition)?`
 
 Also remove if:
 - Contains numbers with multiple non-letter characters (likely series info)
 - Matches pattern: `(YYYY, Publisher)` where YYYY is a year
+- Contains edition patterns (case insensitive)
 
 ### 5. Author Detection Patterns
 
@@ -123,17 +158,21 @@ An author string is valid if:
 ### 7. Processing Order
 
 1. **Remove extension** (.pdf, .epub, .txt, .download)
-2. **Clean noise sources** (Z-Library, libgen, Anna's Archive patterns)
+2. **Remove series prefixes** (early, before other cleaning)
 3. **Remove ALL bracketed annotations** `[...]`
-4. **Extract year** (find last occurrence of 19xx/20xx)
-5. **Remove parentheticals** containing:
+4. **Clean noise sources** (Z-Library, libgen, Anna's Archive patterns)
+5. **Clean extended noise** (editions, versions, language tags, quality markers)
+6. **Remove duplicate markers** (-2, -3, (1), (2))
+7. **Extract year** (find last occurrence of 19xx/20xx)
+8. **Remove parentheticals** containing:
    - Year patterns: `(YYYY, Publisher)` or `(YYYY)`
    - Publisher/series keywords
    - But preserve author names at the end
-6. **Parse author and title** using smart pattern matching
-7. **Clean author name** (handle commas, remove (auth.) patterns)
-8. **Clean title** (remove orphaned brackets, multiple spaces, trailing punctuation)
-9. **Generate final filename**: `Author - Title (Year).ext`
+9. **Validate and fix brackets** (ensure all brackets are properly paired)
+10. **Parse author and title** using smart pattern matching
+11. **Clean author name** (handle commas, remove (auth.) patterns)
+12. **Clean title** (remove orphaned brackets, multiple spaces, trailing punctuation)
+13. **Generate final filename**: `Author - Title (Year).ext`
 
 ### 8. Edge Cases
 
@@ -154,13 +193,34 @@ An author string is valid if:
 ```
 "Title (John Smith)" → Keep if looks like author name
 "Title (Academic Press)" → Remove if contains publisher keywords
+"Title (springer press)" → Remove (case insensitive)
+```
+
+#### Orphaned Brackets (**NEW**)
+```
+"Title with orphan ( bracket" → "Title with orphan bracket"
+"Title (Series (Publisher)) Author)" → "Author - Title" (extra ) removed)
+"Title ((nested" → "Title" (orphaned brackets removed)
 ```
 
 #### Comma Handling
 ```
 "Marco, Grandis" → "Marco Grandis" (both single words)
 "Smith, John" → "Smith, John" (likely Lastname, Firstname - keep comma)
-"Author1, Author2, Author3" → "Author1 Author2 Author3" (multiple commas)
+"Author1, Author2, Author3" → "Author1, Author2, Author3" (keep ALL commas)
+```
+
+#### Edition and Version Handling (**NEW**)
+```
+"Title - 2nd Edition (Author)" → "Author - Title"
+"Title v1.0 (Author)" → "Author - Title"
+"Title (Revised Edition)" → "Title"
+```
+
+#### Language Tags (**NEW**)
+```
+"Title (English Version) (Author)" → "Author - Title"
+"Title (中文版)" → "Title"
 ```
 
 ## Implementation Checklist

@@ -39,6 +39,7 @@ fn parse_filename(filename: &str, extension: &str) -> Result<ParsedMetadata> {
     let mut base = filename.strip_suffix(extension).unwrap_or(filename);
     base = base.strip_suffix(".download").unwrap_or(base);
     let mut base = base.trim().to_string();
+    base = normalize_unbalanced_brackets(&base);
 
     // Step 2: Remove series prefixes (must be early, before other cleaning)
     base = remove_series_prefixes(&base);
@@ -72,6 +73,45 @@ fn parse_filename(filename: &str, extension: &str) -> Result<ParsedMetadata> {
         title,
         year,
     })
+}
+
+fn normalize_unbalanced_brackets(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut open_paren = 0usize;
+    let mut open_square_positions: Vec<usize> = Vec::new();
+
+    for ch in s.chars() {
+        match ch {
+            '(' => {
+                open_paren += 1;
+                result.push(ch);
+            }
+            ')' => {
+                if open_paren > 0 {
+                    open_paren -= 1;
+                    result.push(ch);
+                }
+                // Skip stray closing parens
+            }
+            '[' => {
+                open_square_positions.push(result.len());
+                result.push(ch);
+            }
+            ']' => {
+                if open_square_positions.pop().is_some() {
+                    result.push(ch);
+                }
+                // Skip stray closing brackets
+            }
+            _ => result.push(ch),
+        }
+    }
+
+    if let Some(&cut_pos) = open_square_positions.first() {
+        result.truncate(cut_pos);
+    }
+
+    result.trim().to_string()
 }
 
 fn remove_series_prefixes(s: &str) -> String {
@@ -127,6 +167,17 @@ fn clean_noise_sources(s: &str) -> String {
         r"\s*--\s*[A-Za-z0-9]{16,}\s*(?:--)?",
         // Shorter hash patterns (8+ hex chars)
         r"\s*--\s*[a-f0-9]{8,}\s*(?:--)?",
+        // Embedded URLs
+        r"https?://\S+",
+    ];
+
+    let trailing_patterns = [
+        // Copy/duplicate markers
+        r"(?i)\s*(?:-|\(|\[)?(?:copy|副本|duplicate|final|latest|proof|ocr|draft)\)?\.?\s*$",
+        // Download / edition markers
+        r"(?i)\s*(?:-|\(|\[)?(?:ebook|digital edition|converted|retail|scan|scanned)\)?\.?\s*$",
+        // Device/format suffixes
+        r"(?i)\s*(?:-|\(|\[)?(?:kindle|kobo|azw3|mobi|epub|pdf)\)?\.?\s*$",
     ];
     
     let mut result = s.to_string();
@@ -134,6 +185,10 @@ fn clean_noise_sources(s: &str) -> String {
     for _ in 0..3 {
         let before = result.clone();
         for pattern in &patterns {
+            let re = Regex::new(pattern).unwrap();
+            result = re.replace_all(&result, "").to_string();
+        }
+        for pattern in &trailing_patterns {
             let re = Regex::new(pattern).unwrap();
             result = re.replace_all(&result, "").to_string();
         }
@@ -161,11 +216,25 @@ fn clean_parentheticals(s: &str, year: Option<u16>) -> String {
     
     let mut result = s.to_string();
     
-    // Pattern 1: Remove (YYYY, Publisher) or (YYYY)
+    // Pattern 1: Remove (YYYY ... ) blocks that clearly reference the extracted year
     if let Some(y) = year {
         let year_str = y.to_string();
-        let re = Regex::new(&format!(r"\s*\(\s*{}\s*(?:,\s*[^)]+)?\s*\)", regex::escape(&year_str))).unwrap();
-        result = re.replace_all(&result, "").to_string();
+        let re = Regex::new(&format!(r"\s*\(\s*{}\b[^)]*\)", regex::escape(&year_str))).unwrap();
+        result = re
+            .replace_all(&result, |caps: &regex::Captures| {
+                let content = caps.get(0).map(|m| m.as_str()).unwrap_or("");
+                let inner = content
+                    .trim()
+                    .trim_start_matches('(')
+                    .trim_end_matches(')')
+                    .trim();
+                if should_strip_year_parenthetical(inner, &year_str) {
+                    String::new()
+                } else {
+                    content.to_string()
+                }
+            })
+            .to_string();
     }
     
     // Pattern 2: Remove nested parentheticals with publisher keywords
@@ -207,6 +276,34 @@ fn clean_parentheticals(s: &str, year: Option<u16>) -> String {
     result.trim().to_string()
 }
 
+fn should_strip_year_parenthetical(inner: &str, year_str: &str) -> bool {
+    let trimmed = inner.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+
+    if trimmed.starts_with(year_str) {
+        return true;
+    }
+
+    let lowered = trimmed.to_lowercase();
+    let metadata_keywords = [
+        "scan",
+        "scanned",
+        "retail",
+        "ebook",
+        "digital",
+        "edition",
+        "converted",
+        "proof",
+        "draft",
+        "ocr",
+        "副本",
+    ];
+
+    metadata_keywords.iter().any(|kw| lowered.contains(kw))
+}
+
 fn smart_parse_author_title(s: &str) -> (Option<String>, String) {
     let s = s.trim();
     
@@ -223,9 +320,23 @@ fn smart_parse_author_title(s: &str) -> (Option<String>, String) {
             );
         }
     }
+
+    // Pattern 1b: "Title (Author" - tolerate missing closing paren at EOF
+    let re_trailing_author_open = Regex::new(r"^(.+?)\s*\(([^)]+)\s*$").unwrap();
+    if let Some(caps) = re_trailing_author_open.captures(s) {
+        let title_part = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+        let author_part = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+        
+        if is_likely_author(author_part) && !is_publisher_or_series_info(author_part) {
+            return (
+                Some(clean_author_name(author_part)),
+                clean_title(title_part),
+            );
+        }
+    }
     
     // Pattern 2: "Author - Title" or "Author: Title" or "Author -- Title" (dash, double-dash, or colon separator)
-    let re_separator = Regex::new(r"^(.+?)\s*(?:--|[-:])\s+(.+)$").unwrap();
+    let re_separator = Regex::new(r"^(.+?)\s*(?:--|[-:–—])\s+(.+)$").unwrap();
     if let Some(caps) = re_separator.captures(s) {
         let author_part = caps.get(1).map(|m| m.as_str()).unwrap_or("");
         let title_part = caps.get(2).map(|m| m.as_str()).unwrap_or("");
@@ -240,7 +351,7 @@ fn smart_parse_author_title(s: &str) -> (Option<String>, String) {
     
     // Pattern 3: Multiple authors separated by commas, then dash
     // "Author1, Author2 - Title" or "Author1, Author2 -- Title"
-    let re_multi_author = Regex::new(r"^([A-Z][^:]+?),\s*([A-Z][^:]+?)\s*(?:--|[-:])\s+(.+)$").unwrap();
+    let re_multi_author = Regex::new(r"^([A-Z][^:]+?),\s*([A-Z][^:]+?)\s*(?:--|[-:–—])\s+(.+)$").unwrap();
     if let Some(caps) = re_multi_author.captures(s) {
         let author1 = caps.get(1).map(|m| m.as_str()).unwrap_or("");
         let author2 = caps.get(2).map(|m| m.as_str()).unwrap_or("");
@@ -353,6 +464,10 @@ fn clean_author_name(s: &str) -> String {
     // If multiple commas, keep them ALL: "Author1, Author2, Author3" → unchanged
     // This preserves multi-author lists
     
+    // Remove trailing year artifacts like ", 2021"
+    let re_trailing_year = Regex::new(r"[,\s]*(19|20)\d{2}$").unwrap();
+    s = re_trailing_year.replace_all(&s, "").to_string();
+    
     // Clean up multiple spaces but preserve single spaces (including those after commas)
     let re_space = Regex::new(r"\s{2,}").unwrap();
     s = re_space.replace_all(&s, " ").to_string();
@@ -363,41 +478,59 @@ fn clean_author_name(s: &str) -> String {
 fn is_publisher_or_series_info(s: &str) -> bool {
     // Common publisher/series keywords
     let publisher_keywords = [
-        "Press",
-        "Publishing",
-        "Academic Press",
-        "Springer",
-        "Cambridge",
-        "Oxford",
-        "MIT Press",
-        "Series",
-        "Textbook Series",
-        "Graduate Texts",
-        "Graduate Studies",
-        "Lecture Notes",
-        "Pure and Applied",
-        "Mathematics",
-        "Foundations of",
-        "Monographs",
-        "Studies",
-        "Collection",
-        "Textbook",
-        "Edition",
-        "Vol.",
-        "Volume",
-        "No.",
-        "Part",
+        "press",
+        "publishing",
+        "academic press",
+        "springer",
+        "cambridge",
+        "oxford",
+        "mit press",
+        "series",
+        "textbook series",
+        "graduate texts",
+        "graduate studies",
+        "lecture notes",
+        "pure and applied",
+        "mathematics",
+        "foundations of",
+        "monographs",
+        "studies",
+        "collection",
+        "textbook",
+        "edition",
+        "vol.",
+        "volume",
+        "no.",
+        "part",
+        "scan",
+        "scanned",
+        "digital",
+        "converted",
+        "retail",
+        "proof",
+        "draft",
+        "ocr",
+        "copy",
+        "副本",
+        "kindle",
+        "kobo",
+        "azw3",
+        "mobi",
+        "epub",
+        "pdf",
         "理工",
         "出版社",
         "の",  // Japanese "no" (of)
-        "Z-Library",
+        "z-library",
         "libgen",
-        "Anna's Archive",
+        "anna's archive",
     ];
+    
+    let lowered = s.to_lowercase();
     
     // If contains publisher keywords, it's likely publisher info
     for keyword in &publisher_keywords {
-        if s.contains(keyword) {
+        if lowered.contains(keyword) {
             return true;
         }
     }
@@ -810,6 +943,37 @@ mod tests {
         assert_eq!(metadata.authors, Some("B. R. Tennison".to_string()));
         assert_eq!(metadata.title, "Sheaf Theory");
         assert!(!metadata.title.contains("London Mathematical"));
+    }
+
+    #[test]
+    fn test_en_dash_and_copy_noise() {
+        let metadata = parse_filename(
+            "Smith & Wesson – Firearms Copy (Z-Library).pdf",
+            ".pdf"
+        ).unwrap();
+        assert_eq!(metadata.authors, Some("Smith & Wesson".to_string()));
+        assert_eq!(metadata.title, "Firearms");
+    }
+
+    #[test]
+    fn test_year_scan_parenthetical() {
+        let metadata = parse_filename(
+            "History 1917 (2021 Scan).pdf",
+            ".pdf"
+        ).unwrap();
+        assert_eq!(metadata.authors, None);
+        assert_eq!(metadata.title, "History 1917");
+        assert_eq!(metadata.year, Some(2021));
+    }
+
+    #[test]
+    fn test_truncated_author_parenthesis() {
+        let metadata = parse_filename(
+            "Quantum Fields (Incomplete Author.pdf",
+            ".pdf"
+        ).unwrap();
+        assert_eq!(metadata.authors, Some("Incomplete Author".to_string()));
+        assert_eq!(metadata.title, "Quantum Fields");
     }
 }
 

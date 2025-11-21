@@ -40,7 +40,13 @@ Examples:
   - `2020, Publisher` → `(2020)`
   - `Deadly Decision in Beijing. ... (1989 Tiananmen Massacre)` → include `(1989)` at end
 
-### 3. What to Remove
+### 3. Structural Cleanup (Pre-processing)
+
+- **Normalize unmatched parentheses/brackets:** Remove stray `)` / `]` immediately; truncate any dangling `[` blocks (they always denote annotations), but allow dangling `(` fragments to remain so the parser can still treat them as trailing authors.
+- **Trim + collapse:** After every cleanup pass, trim outer whitespace and collapse repeated spaces to avoid leaving double spaces when entire tokens disappear.
+- **Strip embedded URLs:** Any `http://` or `https://` fragments are removed outright — they never carry book metadata.
+
+### 4. What to Remove
 
 #### Bracketed Annotations (Remove ALL)
 - `[Lecture notes]` → remove
@@ -55,19 +61,13 @@ Examples:
 - `(Foundations of Computer Science)` → remove
 - Any parenthetical containing publisher keywords
 
-#### Source Markers (Remove ALL)
-- `- Z-Library`
-- `- libgen.li`
-- `- Anna's Archive`
-- `(Z-Library)`
-- `(libgen)`
-- Any variation of library/source names
-
-#### Trailing ID Noise (Remove ALL)
-- Amazon ASINs: `-B0F5TFL6ZQ` → remove
-- ISBN-like: `-9780262046305` → remove
-- Pattern: `[-_]` followed by 8+ alphanumeric characters at end of filename
-- Only strip if it appears **after** the title/author portion
+#### Source Markers & Noise (Remove ALL, repeat until stable)
+- Any casing/spacing of `libgen`, `libgen.li`, `Z-Library`, `Anna's Archive`
+- Download leftovers: `.download`, `(ebook)`, `(digital edition)`, `(retail)`, `(scan)`, `(scanned)`, `(converted)`
+- Copy hints: `copy`, `duplicate`, `副本`, `final`, `latest`, `proof`, `draft`, `ocr`
+- Device/format tags appended to filenames: `Kindle`, `Kobo`, `AZW3`, `MOBI`, `EPUB`, `PDF`
+- Embedded HTTP/HTTPS URLs, even if wrapped by parentheses/brackets
+- Trailing hashes/IDs/UUIDs: ASIN/ISBN (`-B0F5TFL6ZQ`, `-9780262046305`), UUIDs, or 8+ hex/alnum blobs after `-`, `_`, or `--`
 
 #### Other Patterns to Remove
 - `(auth.)` or `(Auth.)` → remove
@@ -94,12 +94,13 @@ Also remove if:
 
 #### Pattern 1: Trailing Author in Parentheses
 ```
-"Title (Author Name)" → Author: "Author Name", Title: "Title"
+"Title (Author Name)" or "Title (Author Name" → Author: "Author Name", Title: "Title"
 ```
+Missing `)` at EOF is tolerated and treated as if it closed.
 
 #### Pattern 2: Dash Separator
 ```
-"Author Name - Title" → Author: "Author Name", Title: "Title"
+"Author Name - Title", "Author Name – Title", or "Author Name -- Title" → Author: "Author Name", Title: "Title"
 ```
 
 #### Pattern 3: Colon Separator
@@ -107,9 +108,13 @@ Also remove if:
 "Author Name: Title" → Author: "Author Name", Title: "Title"
 ```
 
-#### Pattern 4: Multiple Authors
+#### Pattern 4: Multiple Authors / Joiners
 ```
-"Author1, Author2 - Title" → Authors: "Author1, Author2", Title: "Title"
+"Author1, Author2 - Title"
+"Author1 & Author2 - Title"
+"Author1 and Author2 - Title"
+"Author1 / Author2 - Title"
+→ Authors keep their joiners (“,”, “&”, “and”, “et”, “等”)
 ```
 
 ### 6. Author Validation Rules
@@ -123,25 +128,24 @@ An author string is valid if:
 ### 7. Processing Order
 
 1. **Remove extension** (.pdf, .epub, .txt, .download)
-2. **Clean noise sources** (Z-Library, libgen, Anna's Archive patterns)
-3. **Remove ALL bracketed annotations** `[...]`
-4. **Extract year** (find last occurrence of 19xx/20xx)
-5. **Remove parentheticals** containing:
-   - Year patterns: `(YYYY, Publisher)` or `(YYYY)`
+2. **Normalize unmatched brackets** (drop stray closers, trim dangling openers)
+3. **Clean noise sources** (library markers, device tags, URLs, hashes, copy markers)
+4. **Remove ALL bracketed annotations** `[...]`
+5. **Extract year** (find last occurrence of 19xx/20xx)
+6. **Remove parentheticals** containing:
+   - Year patterns: `(YYYY, …)` or `(YYYY …)` unless the content looks like a trailing author
    - Publisher/series keywords
-   - But preserve author names at the end
-6. **Parse author and title** using smart pattern matching
-7. **Clean author name** (handle commas, remove (auth.) patterns)
-8. **Clean title** (remove orphaned brackets, multiple spaces, trailing punctuation)
-9. **Generate final filename**: `Author - Title (Year).ext`
+7. **Parse author and title** using smart pattern matching
+8. **Clean author name** (handle commas/joiners, remove `(auth.)` patterns, drop trailing years)
+9. **Clean title** (remove orphaned brackets, multiple spaces, trailing punctuation)
+10. **Generate final filename**: `Author - Title (Year).ext`
 
 ### 8. Edge Cases
 
-#### Nested Parentheticals
+#### Nested / Truncated Parentheticals
 ```
-"Theory (Pure and Applied (Academic Press)) (Author)"
-→ Remove nested publisher info, keep author
-→ Result: "Author - Theory"
+"Theory (Pure and Applied (Academic Press)) (Author"
+→ Remove nested publisher info, auto-close the trailing author, result: "Author - Theory"
 ```
 
 #### Multiple Years
@@ -238,6 +242,18 @@ Use these examples to validate implementation:
 
 15. `Bases cristallines des groupes quantiques (Masaki Kashiwara).pdf`
     → `Masaki Kashiwara - Bases cristallines des groupes quantiques.pdf`
+
+16. `Smith & Wesson – Firearms Copy (Z-Library).pdf`
+    → `Smith & Wesson - Firearms.pdf`
+    **Note:** `&` joiner preserved, trailing `Copy` + `(Z-Library)` removed
+
+17. `History 1917 (2021 Scan).pdf`
+    → `History 1917 (2021).pdf`
+    **Note:** `(2021 Scan)` collapses to `(2021)` at the end
+
+18. `Quantum Fields (Incomplete Author.pdf`
+    → `Incomplete Author - Quantum Fields.pdf`
+    **Note:** Dangling `(` fragment is tolerated and treated as a trailing author block
 
 ## Notes
 

@@ -68,13 +68,14 @@ struct FileInfo {
 1. Remove `.download` suffix (if present)
 2. Remove extension suffix
 3. Strip leading/trailing whitespace
-4. Remove series prefixes
-5. Clean source indicators
-6. Extract year
-7. Remove year patterns from title
-8. Split authors and title
-9. Clean title components
-10. Generate new filename
+4. Normalize unmatched brackets (drop stray `)` / `]`, cut off dangling `[` sections, tolerate trailing `(` snippets for author heuristics)
+5. Remove series prefixes
+6. Clean source indicators and noisy suffixes
+7. Extract year
+8. Remove year/publisher parentheticals (while preserving valid authors)
+9. Split authors and title
+10. Clean title components
+11. Generate new filename
 
 ### Series Prefix Removal
 These exact prefixes are stripped with following `-` or space:
@@ -86,23 +87,16 @@ These exact prefixes are stripped with following `-` or space:
 - `[Progress in Mathematics №`
 - `[AMS Mathematical Surveys and Monographs`
 
-### Source Indicator Removal
-These exact suffixes are removed:
-- ` - libgen.li`
-- ` - libgen`
-- ` - Z-Library`
-- ` - z-Library`
-- ` - Anna's Archive`
-- ` (Z-Library)`
-- ` (z-Library)`
-- ` (libgen.li)`
-- ` (libgen)`
-- ` (Anna's Archive)`
-- ` libgen.li.pdf`
-- ` libgen.pdf`
-- ` Z-Library.pdf`
-- ` z-Library.pdf`
-- ` Anna's Archive.pdf`
+### Source Indicator & Noise Removal
+Remove all of the following patterns anywhere in the base name (repeat until stable):
+- Library mirrors: `libgen`, `libgen.li`, `Z-Library`, `Anna's Archive` (with or without punctuation, case-insensitive)
+- Download leftovers: `.download`, `(ebook)`, `(digital edition)`, `(scan)`, `(scanned)`, `(retail)`, `(converted)`
+- Common duplicate/copy markers: `copy`, `duplicate`, `副本`, `final`, `latest`, `proof`, `draft`, `ocr`
+- Device/format tags: `Kindle`, `Kobo`, `AZW3`, `MOBI`, `EPUB`, `PDF` when attached as trailing tokens
+- Trailing hashes/IDs/UUIDs introduced by scrapers (e.g., `-- b3ab25f14db5...`, `-9780262046305`, `-123e4567-e89b-12d3-a456-426614174000`)
+- Embedded HTTP/HTTPS URLs
+
+Patterns are removed even if wrapped with parentheses/brackets or prefixed by `-`, `_`, or whitespace. The cleaner runs multiple passes to eliminate chains like `-- hash -- Anna's Archive`.
 
 ### Year Extraction
 - Pattern: `\b(19|20)\d{2}\b`
@@ -113,9 +107,9 @@ These exact suffixes are removed:
   - `YYYY, Publisher`
 
 ### Author/Title Splitting
-1. Check for trailing `(Author)` pattern - if content looks like author
-2. Check for `" - "` separator (rightmost match)
-3. Check for `":"` separator
+1. Check for trailing `(Author)` pattern — accepts balanced or truncated `(` segments if they end the string
+2. Check for `" - "`, `" -- "`, `":"`, or `" – "` separators (rightmost match)
+3. Treat `;`, `/`, `&`, `and`, `et`, `等` as valid author joiners **before** the separator
 4. If no clear separator, treat entire string as title
 
 ### Author Detection Rules
@@ -125,13 +119,13 @@ These exact suffixes are removed:
 - Author name is cleaned by removing trailing `(auth.)` patterns
 
 ### Title Cleaning
-- Remove source indicators (same list as above)
+- Remove source indicators/noise (same list as above)
 - Remove `.download` suffixes
 - Remove `(auth.)` patterns
-- Clean orphaned brackets/parentheses
+- Clean orphaned brackets/parentheses (including unmatched `(` / `[` leftovers)
 - Replace underscores with spaces
 - Collapse multiple spaces to single space
-- Trim leading/trailing `- : , ;`
+- Trim leading/trailing `- : , ; .`
 
 ### Final Filename Format
 - With author and year: `Author - Title (Year).ext`
@@ -254,6 +248,7 @@ For cross-language consistency, all JSON arrays are sorted deterministically:
 - Hidden directory traversal only skips the directory entry, not the entire subtree
 - `--extensions`, `--log-file`, `--preserve-unicode`, `--verbose` flags are currently unused
 - `--fetch-arxiv` is placeholder only
+- Aggressive noise removal depends on curated keyword lists; update `docs/formatting_standards.md` and all language implementations together when adding new patterns
 
 ### File Encoding
 - Filenames must be valid UTF-8

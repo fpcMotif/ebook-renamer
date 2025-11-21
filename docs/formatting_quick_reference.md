@@ -8,25 +8,28 @@ Author, Author - Title (Year).ext
 ## Processing Pipeline
 
 1. Remove extension & `.download` suffix
-2. Remove source markers (Z-Library, libgen, Anna's Archive)
+2. Remove series prefixes (London Mathematical Society Lecture Note Series, etc.)
 3. Remove ALL `[...]` bracketed content
-4. Extract year (last 19xx/20xx found)
-5. Remove trailing ID noise (Amazon ASINs: `-B0F5TFL6ZQ`, `-9780262046305`, etc.)
-6. Remove parentheticals with:
+4. Remove source markers (Z-Library, libgen, Anna's Archive)
+5. Remove duplicate markers (-2, -3, (1), (2), etc.)
+6. Extract year (last 19xx/20xx found)
+7. **Clean orphaned brackets** (remove unclosed parentheses/brackets and their content)
+8. Remove parentheticals with:
    - Year patterns: `(YYYY, Publisher)` or `(YYYY)`
    - Publisher keywords (Press, Series, Academic Press, Textbook Series, etc.)
    - Nested parentheticals: `(Pure and Applied (Academic Press))`
+   - Unclosed parentheses at the end
    - Keep author names at end
-7. Parse author/title using patterns:
+9. Parse author/title using patterns:
    - `Title (Author)` → trailing author
    - `Author - Title` → dash separator
    - `Author: Title` → colon separator
    - `Author1, Author2 - Title` → multi-author
-8. Clean author: smart comma handling
+10. Clean author: smart comma handling
    - `Marco, Grandis` → `Marco Grandis` (join if both single words)
    - `Thomas H. Wolff, Izabella Aba, Carol Shubin` → keep commas (multi-author)
-9. Clean title: remove orphaned brackets, multiple spaces, trailing punctuation
-10. Generate: `Author - Title (Year).ext`
+11. Clean title: remove orphaned brackets, source markers, publisher keywords, multiple spaces, trailing punctuation
+12. Generate: `Author - Title (Year).ext`
 
 ## Key Removals
 

@@ -60,11 +60,15 @@ fn parse_filename(filename: &str, extension: &str) -> Result<ParsedMetadata> {
     // Step 6: Extract year FIRST (most reliable)
     let year = extract_year(&base);
 
-    // Step 7: Remove ALL parenthetical content that contains year or publisher info
+    // Step 7: Clean orphaned brackets early (before parenthetical processing)
+    // This removes unclosed parentheses/brackets and their content
+    base = clean_orphaned_brackets(&base);
+
+    // Step 8: Remove ALL parenthetical content that contains year or publisher info
     // Keep only author names in parens if at the end
     base = clean_parentheticals(&base, year);
 
-    // Step 8: Parse author and title with smart pattern matching
+    // Step 9: Parse author and title with smart pattern matching
     let (authors, title) = smart_parse_author_title(&base);
 
     Ok(ParsedMetadata {
@@ -199,6 +203,10 @@ fn clean_parentheticals(s: &str, year: Option<u16>) -> String {
             content.to_string()
         }
     }).to_string();
+    
+    // Pattern 4: Remove any remaining unclosed parentheses at the end
+    // This handles cases where clean_orphaned_brackets might have missed some
+    result = Regex::new(r"\(\s*[^)]*$").unwrap().replace_all(&result, "").to_string();
     
     // Clean up multiple spaces
     let re_space = Regex::new(r"\s+").unwrap();
@@ -433,7 +441,25 @@ fn clean_title(s: &str) -> String {
     let re_trailing_id = Regex::new(r"[-_][A-Za-z0-9]{8,}$").unwrap();
     s = re_trailing_id.replace_all(&s, "").to_string();
 
-    // Clean up orphaned brackets/parens
+    // Remove any remaining source markers that might have been missed
+    let source_patterns = [
+        r"\s*[-\(]?\s*[zZ]-?Library\s*[)\.]?",
+        r"\s*\(libgen(?:\.li)?\)",
+        r"\s*-\s*libgen(?:\.li)?",
+        r"Anna'?s?\s*Archive",
+        r"\s*[-\(]?\s*Anna'?s?\s+Archive\s*[)\.]?",
+    ];
+    for pattern in &source_patterns {
+        let re = Regex::new(pattern).unwrap();
+        s = re.replace_all(&s, "").to_string();
+    }
+
+    // Remove any remaining publisher/series keywords in parentheses
+    // This catches cases that might have been missed earlier
+    let re_pub_paren = Regex::new(r"\(\s*(?:Press|Publishing|Series|Textbook|Edition|Vol\.|Volume|No\.|Part)[^)]*\)").unwrap();
+    s = re_pub_paren.replace_all(&s, "").to_string();
+
+    // Clean up orphaned brackets/parens (redundant but safe)
     s = clean_orphaned_brackets(&s);
 
     // Remove multiple spaces
@@ -451,6 +477,8 @@ fn clean_orphaned_brackets(s: &str) -> String {
     let mut result = String::new();
     let mut open_parens = 0;
     let mut open_brackets = 0;
+    let mut paren_starts: Vec<usize> = Vec::new();
+    let mut bracket_starts: Vec<usize> = Vec::new();
     let chars: Vec<char> = s.chars().collect();
     let mut i = 0;
 
@@ -460,22 +488,26 @@ fn clean_orphaned_brackets(s: &str) -> String {
         match c {
             '(' => {
                 open_parens += 1;
+                paren_starts.push(result.len());
                 result.push(c);
             }
             ')' => {
                 if open_parens > 0 {
                     open_parens -= 1;
+                    paren_starts.pop();
                     result.push(c);
                 }
                 // Skip orphaned closing paren
             }
             '[' => {
                 open_brackets += 1;
+                bracket_starts.push(result.len());
                 result.push(c);
             }
             ']' => {
                 if open_brackets > 0 {
                     open_brackets -= 1;
+                    bracket_starts.pop();
                     result.push(c);
                 }
                 // Skip orphaned closing bracket
@@ -490,7 +522,69 @@ fn clean_orphaned_brackets(s: &str) -> String {
         i += 1;
     }
 
-    // Remove trailing orphaned opening brackets
+    // Remove unclosed parentheses/brackets and their content
+    // Build result by skipping unclosed sections
+    if !paren_starts.is_empty() || !bracket_starts.is_empty() {
+        let mut new_result = String::new();
+        let mut skip_ranges: Vec<(usize, usize)> = Vec::new();
+        
+        // Mark ranges to skip (unclosed brackets and their content)
+        for &start_pos in &paren_starts {
+            // Find end: either end of string or next whitespace/punctuation
+            let mut end_pos = result.len();
+            let remaining = &result[start_pos..];
+            for (idx, ch) in remaining.char_indices() {
+                if ch == ' ' || ch == '-' || ch == ':' || ch == ',' || ch == ';' || ch == '.' {
+                    end_pos = start_pos + idx;
+                    break;
+                }
+            }
+            skip_ranges.push((start_pos, end_pos));
+        }
+        
+        for &start_pos in &bracket_starts {
+            let mut end_pos = result.len();
+            let remaining = &result[start_pos..];
+            for (idx, ch) in remaining.char_indices() {
+                if ch == ' ' || ch == '-' || ch == ':' || ch == ',' || ch == ';' || ch == '.' {
+                    end_pos = start_pos + idx;
+                    break;
+                }
+            }
+            skip_ranges.push((start_pos, end_pos));
+        }
+        
+        // Sort and merge overlapping ranges
+        skip_ranges.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut merged: Vec<(usize, usize)> = Vec::new();
+        for (start, end) in skip_ranges {
+            if let Some(last) = merged.last_mut() {
+                if start <= last.1 {
+                    last.1 = last.1.max(end);
+                } else {
+                    merged.push((start, end));
+                }
+            } else {
+                merged.push((start, end));
+            }
+        }
+        
+        // Build new string skipping marked ranges
+        let mut pos = 0;
+        for (skip_start, skip_end) in merged {
+            if pos < skip_start {
+                new_result.push_str(&result[pos..skip_start]);
+            }
+            pos = skip_end;
+        }
+        if pos < result.len() {
+            new_result.push_str(&result[pos..]);
+        }
+        
+        result = new_result;
+    }
+    
+    // Also remove any trailing opening brackets
     while result.ends_with('(') || result.ends_with('[') {
         result.pop();
     }

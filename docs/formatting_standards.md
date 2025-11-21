@@ -123,17 +123,21 @@ An author string is valid if:
 ### 7. Processing Order
 
 1. **Remove extension** (.pdf, .epub, .txt, .download)
-2. **Clean noise sources** (Z-Library, libgen, Anna's Archive patterns)
+2. **Remove series prefixes** (London Mathematical Society Lecture Note Series, etc.)
 3. **Remove ALL bracketed annotations** `[...]`
-4. **Extract year** (find last occurrence of 19xx/20xx)
-5. **Remove parentheticals** containing:
+4. **Clean noise sources** (Z-Library, libgen, Anna's Archive patterns)
+5. **Remove duplicate markers** (-2, -3, (1), (2), etc.)
+6. **Extract year** (find last occurrence of 19xx/20xx)
+7. **Clean orphaned brackets** (remove unclosed parentheses/brackets and their content)
+8. **Remove parentheticals** containing:
    - Year patterns: `(YYYY, Publisher)` or `(YYYY)`
    - Publisher/series keywords
    - But preserve author names at the end
-6. **Parse author and title** using smart pattern matching
-7. **Clean author name** (handle commas, remove (auth.) patterns)
-8. **Clean title** (remove orphaned brackets, multiple spaces, trailing punctuation)
-9. **Generate final filename**: `Author - Title (Year).ext`
+   - Also remove any remaining unclosed parentheses at the end
+9. **Parse author and title** using smart pattern matching
+10. **Clean author name** (handle commas, remove (auth.) patterns)
+11. **Clean title** (remove orphaned brackets, source markers, publisher keywords, multiple spaces, trailing punctuation)
+12. **Generate final filename**: `Author - Title (Year).ext`
 
 ### 8. Edge Cases
 
@@ -160,7 +164,23 @@ An author string is valid if:
 ```
 "Marco, Grandis" → "Marco Grandis" (both single words)
 "Smith, John" → "Smith, John" (likely Lastname, Firstname - keep comma)
-"Author1, Author2, Author3" → "Author1 Author2 Author3" (multiple commas)
+"Author1, Author2, Author3" → "Author1, Author2, Author3" (multiple commas - keep all)
+```
+
+#### Unclosed Parentheses/Brackets
+```
+"Title (Unclosed content" → Remove unclosed paren and content
+"Title [Unclosed bracket" → Remove unclosed bracket and content
+"Title (Closed) (Unclosed" → Keep closed, remove unclosed
+→ Result: "Title" or "Title (Closed)" depending on content
+```
+
+#### Orphaned Brackets
+```
+"Title ) with ( orphaned ) brackets ["
+→ Remove orphaned closing brackets, keep valid pairs
+→ Remove trailing unclosed opening brackets
+→ Result: "Title with orphaned brackets"
 ```
 
 ## Implementation Checklist

@@ -127,6 +127,14 @@ fn clean_noise_sources(s: &str) -> String {
         r"\s*--\s*[A-Za-z0-9]{16,}\s*(?:--)?",
         // Shorter hash patterns (8+ hex chars)
         r"\s*--\s*[a-f0-9]{8,}\s*(?:--)?",
+        // "Uploaded by"
+        r"\s*[-\(]?\s*[Uu]ploaded by\s+[^)\-]+[)\.]?",
+        r"\s*-\s*[Uu]ploaded by\s+[^)\-]+",
+        // "Via ..."
+        r"\s*[-\(]?\s*[Vv]ia\s+[^)\-]+[)\.]?",
+        // Website URLs
+        r"\s*[-\(]?\s*w{3}\.[a-zA-Z0-9-]+\.[a-z]{2,}\s*[)\.]?",
+        r"\s*[-\(]?\s*[a-zA-Z0-9-]+\.(?:com|org|net|edu|io)\s*[)\.]?",
     ];
     
     let mut result = s.to_string();
@@ -449,51 +457,70 @@ fn clean_title(s: &str) -> String {
 fn clean_orphaned_brackets(s: &str) -> String {
     let s = s.trim();
     let mut result = String::new();
-    let mut open_parens = 0;
-    let mut open_brackets = 0;
+
+    // Track open parens/brackets, but also their indices in the result string
+    // so we can remove them if they remain unclosed
+    let mut open_parens_indices: Vec<usize> = Vec::new();
+    let mut open_brackets_indices: Vec<usize> = Vec::new();
+
     let chars: Vec<char> = s.chars().collect();
-    let mut i = 0;
 
-    while i < chars.len() {
-        let c = chars[i];
-
+    for c in chars {
         match c {
             '(' => {
-                open_parens += 1;
+                open_parens_indices.push(result.len());
                 result.push(c);
             }
             ')' => {
-                if open_parens > 0 {
-                    open_parens -= 1;
+                if !open_parens_indices.is_empty() {
+                    open_parens_indices.pop();
                     result.push(c);
+                } else {
+                    // Skip orphaned closing paren
+                    result.push(' '); // Replace with space to avoid merging words
                 }
-                // Skip orphaned closing paren
             }
             '[' => {
-                open_brackets += 1;
+                open_brackets_indices.push(result.len());
                 result.push(c);
             }
             ']' => {
-                if open_brackets > 0 {
-                    open_brackets -= 1;
+                if !open_brackets_indices.is_empty() {
+                    open_brackets_indices.pop();
                     result.push(c);
+                } else {
+                    // Skip orphaned closing bracket
+                    result.push(' '); // Replace with space
                 }
-                // Skip orphaned closing bracket
             }
             '_' => {
-                // Replace underscores with spaces, then clean up
                 result.push(' ');
             }
             _ => result.push(c),
         }
-
-        i += 1;
     }
 
-    // Remove trailing orphaned opening brackets
-    while result.ends_with('(') || result.ends_with('[') {
-        result.pop();
+    // Remove unclosed opening brackets/parens
+    // We need to remove them from result. Since removing changes indices,
+    // we sort indices in descending order and remove
+    let mut indices_to_remove = Vec::new();
+    indices_to_remove.extend(open_parens_indices);
+    indices_to_remove.extend(open_brackets_indices);
+    indices_to_remove.sort_by(|a, b| b.cmp(a)); // Descending sort
+
+    for idx in indices_to_remove {
+        if idx < result.len() {
+            result.remove(idx);
+            // If removing creates double space, handle it later or now?
+            // Usually just removing the bracket is enough.
+            // But if we have "Title ( Part 1", removing '(' gives "Title  Part 1".
+            // We should rely on standard space cleaning later.
+        }
     }
+
+    // Final cleanup of spaces
+    let re_space = Regex::new(r"\s{2,}").unwrap();
+    let result = re_space.replace_all(&result, " ").to_string();
 
     result.trim().to_string()
 }
@@ -811,5 +838,30 @@ mod tests {
         assert_eq!(metadata.title, "Sheaf Theory");
         assert!(!metadata.title.contains("London Mathematical"));
     }
-}
 
+    #[test]
+    fn test_unclosed_parenthesis() {
+        // Case 1: Unclosed parenthesis in the middle
+        let result = clean_orphaned_brackets("Title (Part 1");
+        assert_eq!(result, "Title Part 1");
+
+        // Case 2: Unclosed bracket in the middle
+        let result = clean_orphaned_brackets("Title [Part 1");
+        assert_eq!(result, "Title Part 1");
+
+        // Case 3: Nested but broken
+        let result = clean_orphaned_brackets("Title (Part [1");
+        assert_eq!(result, "Title Part 1");
+    }
+
+    #[test]
+    fn test_unnecessary_info_removal() {
+        // Case 1: "Uploaded by"
+        let metadata = parse_filename("Title - Uploaded by user123.pdf", ".pdf").unwrap();
+        assert!(!metadata.title.contains("Uploaded by"));
+
+        // Case 2: Website
+        let metadata = parse_filename("Title - www.example.com.pdf", ".pdf").unwrap();
+        assert!(!metadata.title.contains("www.example.com"));
+    }
+}

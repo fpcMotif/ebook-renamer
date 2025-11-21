@@ -10,23 +10,24 @@ Author, Author - Title (Year).ext
 1. Remove extension & `.download` suffix
 2. Remove source markers (Z-Library, libgen, Anna's Archive)
 3. Remove ALL `[...]` bracketed content
-4. Extract year (last 19xx/20xx found)
-5. Remove trailing ID noise (Amazon ASINs: `-B0F5TFL6ZQ`, `-9780262046305`, etc.)
-6. Remove parentheticals with:
+4. Repair unbalanced parentheses/brackets (close `(Author`, drop dangling `(Publisher`, strip stray `)`/`]`)
+5. Remove duplicate counters / trailing ID noise (Amazon ASINs: `-B0F5TFL6ZQ`, `-9780262046305`, `(1)`, `-2`, etc.)
+6. Extract year (last 19xx/20xx found)
+7. Remove parentheticals with:
    - Year patterns: `(YYYY, Publisher)` or `(YYYY)`
    - Publisher keywords (Press, Series, Academic Press, Textbook Series, etc.)
    - Nested parentheticals: `(Pure and Applied (Academic Press))`
    - Keep author names at end
-7. Parse author/title using patterns:
+8. Parse author/title using patterns:
    - `Title (Author)` → trailing author
    - `Author - Title` → dash separator
    - `Author: Title` → colon separator
    - `Author1, Author2 - Title` → multi-author
-8. Clean author: smart comma handling
+9. Clean author: smart comma handling
    - `Marco, Grandis` → `Marco Grandis` (join if both single words)
    - `Thomas H. Wolff, Izabella Aba, Carol Shubin` → keep commas (multi-author)
-9. Clean title: remove orphaned brackets, multiple spaces, trailing punctuation
-10. Generate: `Author - Title (Year).ext`
+10. Clean title: remove orphaned brackets, multiple spaces, trailing punctuation
+11. Generate: `Author - Title (Year).ext`
 
 ## Key Removals
 
@@ -37,6 +38,8 @@ Author, Author - Title (Year).ext
 - `-B0F5TFL6ZQ`, `-9780262046305` (trailing ID noise)
 - `(auth.)` patterns
 - `(YYYY, Publisher)` → keep only `(YYYY)`
+- Stray `)` / `]` and dangling `(Publisher` or `[Lecture notes` fragments
+- Trailing `(Author` without a `)` → auto-close so it can be parsed
 
 **Keep:**
 - Author names in parentheses at end
@@ -83,4 +86,6 @@ Multiple spaces: \s{2,}
 | `Title (Series) (2020).pdf` | `Title (2020).pdf` |
 | `Title-ASIN123.pdf` | `Title.pdf` |
 | `标题 (作者).pdf` | `作者 - 标题.pdf` |
+| `Title (Author.pdf` | `Author - Title.pdf` |
+| `Title (Springer.pdf` | `Title.pdf` |
 

@@ -50,21 +50,24 @@ fn parse_filename(filename: &str, extension: &str) -> Result<ParsedMetadata> {
     // MUST happen BEFORE author parsing to avoid treating (Z-Library) as author
     base = clean_noise_sources(&base);
 
-    // Step 5: Remove duplicate markers: -2, -3, (1), (2), etc.
+    // Step 5: Repair unbalanced parentheses/brackets so downstream steps see consistent structure
+    base = repair_unbalanced_delimiters(&base);
+
+    // Step 6: Remove duplicate markers: -2, -3, (1), (2), etc.
     // But NOT years like (1978) or -1978
     // These can appear at the end OR before a year in parens
     base = Regex::new(r"[-\s]*\(\d{1,2}\)\s*$").unwrap().replace(&base, "").to_string();  // (1), (2) at end
     base = Regex::new(r"-\d{1,2}\s*$").unwrap().replace(&base, "").to_string();  // -2, -3 at end
     base = Regex::new(r"-\d{1,2}\s+\(").unwrap().replace(&base, " (").to_string();  // -2 before (year)
 
-    // Step 6: Extract year FIRST (most reliable)
+    // Step 7: Extract year FIRST (most reliable)
     let year = extract_year(&base);
 
-    // Step 7: Remove ALL parenthetical content that contains year or publisher info
+    // Step 8: Remove ALL parenthetical content that contains year or publisher info
     // Keep only author names in parens if at the end
     base = clean_parentheticals(&base, year);
 
-    // Step 8: Parse author and title with smart pattern matching
+    // Step 9: Parse author and title with smart pattern matching
     let (authors, title) = smart_parse_author_title(&base);
 
     Ok(ParsedMetadata {
@@ -205,6 +208,74 @@ fn clean_parentheticals(s: &str, year: Option<u16>) -> String {
     result = re_space.replace_all(&result, " ").to_string();
     
     result.trim().to_string()
+}
+
+fn repair_unbalanced_delimiters(s: &str) -> String {
+    let mut chars: Vec<char> = Vec::new();
+    let mut paren_stack: Vec<usize> = Vec::new();
+    let mut bracket_stack: Vec<usize> = Vec::new();
+
+    for c in s.chars() {
+        match c {
+            '(' => {
+                paren_stack.push(chars.len());
+                chars.push('(');
+            }
+            ')' => {
+                if paren_stack.pop().is_some() {
+                    chars.push(')');
+                }
+                // Skip stray closing paren
+            }
+            '[' => {
+                bracket_stack.push(chars.len());
+                chars.push('[');
+            }
+            ']' => {
+                if bracket_stack.pop().is_some() {
+                    chars.push(']');
+                }
+                // Skip stray closing bracket
+            }
+            _ => chars.push(c),
+        }
+    }
+
+    while let Some(idx) = bracket_stack.pop() {
+        if idx <= chars.len() {
+            chars.truncate(idx);
+        }
+    }
+
+    while let Some(idx) = paren_stack.pop() {
+        if idx >= chars.len() {
+            continue;
+        }
+        let tail: String = chars[idx + 1..].iter().collect();
+        let tail_trim = tail.trim();
+
+        if tail_trim.is_empty() {
+            chars.truncate(idx);
+            continue;
+        }
+
+        if is_publisher_or_series_info(tail_trim)
+            || is_publisher_or_series_info(&format!("({})", tail_trim))
+            || tail_trim.len() <= 3
+        {
+            chars.truncate(idx);
+            continue;
+        }
+
+        if is_likely_author(tail_trim) && !is_publisher_or_series_info(tail_trim) {
+            chars.push(')');
+        } else {
+            chars.remove(idx);
+        }
+    }
+
+    let cleaned: String = chars.into_iter().collect();
+    cleaned.trim().to_string()
 }
 
 fn smart_parse_author_title(s: &str) -> (Option<String>, String) {
@@ -810,6 +881,39 @@ mod tests {
         assert_eq!(metadata.authors, Some("B. R. Tennison".to_string()));
         assert_eq!(metadata.title, "Sheaf Theory");
         assert!(!metadata.title.contains("London Mathematical"));
+    }
+
+    #[test]
+    fn test_unbalanced_author_parenthesis_gets_closed() {
+        let metadata = parse_filename(
+            "Singular Learning Theory (Sumio Watanabe.pdf",
+            ".pdf",
+        )
+        .unwrap();
+        assert_eq!(metadata.authors, Some("Sumio Watanabe".to_string()));
+        assert_eq!(metadata.title, "Singular Learning Theory");
+    }
+
+    #[test]
+    fn test_unbalanced_publisher_parenthesis_removed() {
+        let metadata = parse_filename(
+            "Advanced Topics in Category Theory (Springer.pdf",
+            ".pdf",
+        )
+        .unwrap();
+        assert_eq!(metadata.authors, None);
+        assert_eq!(metadata.title, "Advanced Topics in Category Theory");
+    }
+
+    #[test]
+    fn test_stray_closing_parenthesis_ignored() {
+        let metadata = parse_filename(
+            "John Smith - Sample Book Title ) draft.pdf",
+            ".pdf",
+        )
+        .unwrap();
+        assert_eq!(metadata.authors, Some("John Smith".to_string()));
+        assert_eq!(metadata.title, "Sample Book Title draft");
     }
 }
 

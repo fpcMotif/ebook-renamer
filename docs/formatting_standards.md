@@ -75,6 +75,12 @@ Examples:
 - Multiple spaces → single space
 - Leading/trailing punctuation (dash, colon, comma, semicolon, period)
 
+#### Unbalanced Parentheses / Brackets
+- Remove stray `)` / `]` that do not have matching openers (they are almost always typos)
+- If the filename ends with `(Author` (missing `)`), assume it is an author tag, close it as `(Author)` so the parser can extract the name
+- If the trailing `( ...` fragment contains publisher/series keywords or source markers, drop the entire fragment starting from the `(`
+- For dangling `[` fragments (e.g., `[Lecture notes`), drop everything from the `[` to the end because it is noisy metadata
+
 ### 4. Publisher/Series Detection Keywords
 
 If parenthetical content contains any of these keywords, remove it:
@@ -125,15 +131,16 @@ An author string is valid if:
 1. **Remove extension** (.pdf, .epub, .txt, .download)
 2. **Clean noise sources** (Z-Library, libgen, Anna's Archive patterns)
 3. **Remove ALL bracketed annotations** `[...]`
-4. **Extract year** (find last occurrence of 19xx/20xx)
-5. **Remove parentheticals** containing:
+4. **Repair unbalanced parentheses/brackets** (close `(Author`, drop dangling `(Publisher`, strip stray `)`/`]`)
+5. **Extract year** (find last occurrence of 19xx/20xx)
+6. **Remove parentheticals** containing:
    - Year patterns: `(YYYY, Publisher)` or `(YYYY)`
    - Publisher/series keywords
    - But preserve author names at the end
-6. **Parse author and title** using smart pattern matching
-7. **Clean author name** (handle commas, remove (auth.) patterns)
-8. **Clean title** (remove orphaned brackets, multiple spaces, trailing punctuation)
-9. **Generate final filename**: `Author - Title (Year).ext`
+7. **Parse author and title** using smart pattern matching
+8. **Clean author name** (handle commas, remove (auth.) patterns)
+9. **Clean title** (remove orphaned brackets, multiple spaces, trailing punctuation)
+10. **Generate final filename**: `Author - Title (Year).ext`
 
 ### 8. Edge Cases
 

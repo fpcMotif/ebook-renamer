@@ -101,9 +101,22 @@ class Normalizer:
 
     def _clean_noise_sources(self, s: str) -> str:
         patterns = [
-            r'\s*[-\(]?\s*[zZ]-?Library(?:\.pdf)?\s*[)\.]?',
-            r'\s*[-\(]?\s*libgen(?:\.li)?(?:\.pdf)?\s*[)\.]?',
-            r'\s*[-\(]?\s*Anna\'?s?\s+Archive(?:\.pdf)?\s*[)\.]?',
+            # Z-Library variants (with word boundaries and spacing)
+            r'\s*[-\(]?\s*[zZ]-?Library\.pdf\b',
+            r'\s*[-\(]?\s*[zZ]-?Library\s*[)\.]?',
+            r'\s*\([zZ]-?Library\)',
+            r'\s*-\s*[zZ]-?Library',
+            # libgen variants
+            r'\s+libgen\.li\.pdf\b',
+            r'\s*[-\(]?\s*libgen(?:\.li)?\s*[)\.]?',
+            r'\s*\(libgen(?:\.li)?\)',
+            r'\s*-\s*libgen(?:\.li)?',
+            # Anna's Archive variants
+            r'\s+Anna\'?s?\s*Archive\.pdf\b',
+            r'Anna\'?s?\s*Archive',
+            r'\s*[-\(]?\s*Anna\'?s?\s+Archive\s*[)\.]?',
+            r'\s*\(Anna\'?s?\s+Archive\)',
+            r'\s*-\s*Anna\'?s?\s+Archive',
             # Hash patterns
             r'\s*--\s*[a-f0-9]{32}\s*(?:--)?',
             r'\s*--\s*\d{10,13}\s*(?:--)?',
@@ -111,8 +124,13 @@ class Normalizer:
             r'\s*--\s*[a-f0-9]{8,}\s*(?:--)?',
         ]
         result = s
-        for pattern in patterns:
-            result = re.sub(pattern, "", result)
+        # Apply patterns multiple times to handle consecutive patterns
+        for _ in range(3):
+            before = result
+            for pattern in patterns:
+                result = re.sub(pattern, "", result)
+            if result == before:
+                break
         return result.strip()
 
     def _extract_year(self, s: str) -> Optional[int]:
@@ -239,16 +257,83 @@ class Normalizer:
         return s.strip()
 
     def _is_publisher_or_series_info(self, s: str) -> bool:
+        # Convert to lowercase for case-insensitive matching
+        s_lower = s.lower()
+        
+        # Expanded keyword list with multiple categories
         publisher_keywords = [
-            "Press", "Publishing", "Academic Press", "Springer", "Cambridge", "Oxford", "MIT Press",
-            "Series", "Textbook Series", "Graduate Texts", "Graduate Studies", "Lecture Notes",
-            "Pure and Applied", "Mathematics", "Foundations of", "Monographs", "Studies", "Collection",
-            "Textbook", "Edition", "Vol.", "Volume", "No.", "Part", "理工", "出版社", "の",
+            # Publishers
+            "press", "publishing", "publisher", "academic press", "springer",
+            "cambridge", "oxford", "mit press", "wiley", "pearson", "mcgraw-hill",
+            "elsevier", "taylor & francis",
+            
+            # Series
+            "series", "textbook series", "graduate texts", "graduate studies",
+            "lecture notes", "pure and applied", "foundations of", "monographs",
+            "studies", "collection", "vol.", "volume", "no.", "part", "number",
+            
+            # General book types
+            "fiction", "novel", "textbook", "handbook", "manual", "guide",
+            "reference", "cookbook", "workbook", "encyclopedia", "dictionary",
+            "atlas", "anthology", "biography", "memoir", "essay", "essays",
+            "poetry", "drama", "short stories",
+            
+            # Academic types
+            "thesis", "dissertation", "proceedings", "conference", "symposium",
+            "workshop", "report", "technical report", "white paper", "preprint",
+            "manuscript", "lecture", "course notes", "study guide", "solutions manual",
+            
+            # Edition keywords
+            "edition", "revised edition", "updated edition", "expanded edition",
+            "abridged", "unabridged", "complete edition", "anniversary edition",
+            "collector's edition", "special edition", "1st ed", "2nd ed", "3rd ed",
+            
+            # Format/Quality indicators
+            "ocr", "scanned", "retail", "repack", "remastered", "searchable",
+            "bookmarked", "optimized", "compressed", "high quality", "hq",
+            "drm-free", "drm free", "no drm", "cracked",
+            "kindle edition", "pdf version", "epub version", "mobi version",
+            
+            # Chinese keywords
+            "小说", "教材", "教程", "手册", "指南", "参考书", "文集", "论文集",
+            "丛书", "系列", "修订版", "第二版", "第三版", "增订版",
+            "理工", "出版社",
+            
+            # Japanese keywords
+            "小説", "教科書", "テキスト", "ハンドブック", "マニュアル", "ガイド",
+            "講義", "シリーズ", "改訂版", "第2版", "第3版", "の",
+            
+            # Source markers
+            "z-library", "libgen", "anna's archive", "annas archive",
         ]
         
+        # Check for keywords (case-insensitive)
         for k in publisher_keywords:
-            if k in s:
+            if k in s_lower:
                 return True
+        
+        # Check for version patterns: v1.0, version 2.0, Ver. 1.5
+        if re.search(r'\b(v|ver|version)\.?\s*\d+(\.\d+)*\b', s_lower):
+            return True
+        
+        # Check for page count patterns: 500 pages, 500pp, 500 P
+        if re.search(r'\b\d+\s*(?:pages?|pp?\.?|P)\b', s_lower):
+            return True
+        
+        # Check for language tags
+        lang_patterns = [
+            "english", "中文", "日本語", "deutsch", "français",
+            "english edition", "chinese edition", "japanese edition",
+        ]
+        for pattern in lang_patterns:
+            if pattern in s_lower:
+                return True
+        
+        # Check for hash patterns
+        if re.search(r'[a-f0-9]{8,}', s) and len(s) > 8:
+            return True
+        if re.search(r'[A-Za-z0-9]{16,}', s) and len(s) > 16:
+            return True
                 
         # Check for series info (mostly non-letters with numbers)
         has_numbers = any(c.isdigit() for c in s)

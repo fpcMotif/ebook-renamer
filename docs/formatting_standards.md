@@ -72,23 +72,83 @@ Examples:
 #### Other Patterns to Remove
 - `(auth.)` or `(Auth.)` → remove
 - `.download` suffix → remove
+- Format indicators: `(OCR)`, `(Scanned)`, `(Searchable)`, `(Bookmarked)`, `(HQ)` → remove
+- Quality markers: `(High Quality)`, `(Compressed)`, `(Optimized)` → remove
+- DRM status: `(DRM-free)`, `(No DRM)`, `(Cracked)` → remove
+- Format versions: `(PDF version)`, `(Kindle Edition)`, `(EPUB version)` → remove
+- Version numbers: `(v1.0)`, `(version 2.0)`, `(Ver. 1.5)` → remove
+- Page counts: `(500 pages)`, `(500pp)`, `(500 P)` → remove
+- Language tags: `(English)`, `(中文)`, `(English Edition)` → remove (unless part of actual title)
 - Multiple spaces → single space
 - Leading/trailing punctuation (dash, colon, comma, semicolon, period)
+- Orphaned brackets/parentheses (unmatched opening or closing brackets)
 
-### 4. Publisher/Series Detection Keywords
+### 4. Publisher/Series/Type Detection Keywords
 
 If parenthetical content contains any of these keywords, remove it:
 
+#### Publisher Keywords
 ```
-Press, Publishing, Academic Press, Springer, Cambridge, Oxford, MIT Press,
-Series, Graduate Texts, Graduate Studies, Lecture Notes, Pure and Applied,
-Mathematics, Foundations of, Monographs, Studies, Collection, Textbook,
-Edition, Vol., Volume, No., Part
+Press, Publishing, Publisher, Academic Press, Springer, Cambridge, Oxford, 
+MIT Press, Wiley, Pearson, McGraw-Hill, Elsevier, Taylor & Francis
 ```
 
-Also remove if:
+#### Series Keywords
+```
+Series, Textbook Series, Graduate Texts, Graduate Studies, Lecture Notes,
+Pure and Applied, Foundations of, Monographs, Studies, Collection,
+Vol., Volume, No., Part, Number
+```
+
+#### Book Type Keywords (General)
+```
+Fiction, Novel, Textbook, Handbook, Manual, Guide, Reference,
+Cookbook, Workbook, Encyclopedia, Dictionary, Atlas, Anthology,
+Biography, Memoir, Essay, Essays, Poetry, Drama, Short Stories
+```
+
+#### Academic Type Keywords
+```
+Thesis, Dissertation, Proceedings, Conference, Symposium, Workshop,
+Report, Technical Report, White Paper, Preprint, Manuscript,
+Lecture, Course Notes, Study Guide, Solutions Manual
+```
+
+#### Edition Keywords
+```
+Edition, Revised Edition, Second Edition, Third Edition, Updated Edition,
+Expanded Edition, Abridged, Unabridged, Complete Edition,
+Anniversary Edition, Collector's Edition, Special Edition,
+1st ed, 2nd ed, 3rd ed
+```
+
+#### Format/Quality Keywords
+```
+OCR, Scanned, Retail, Repack, Remastered, Searchable,
+Bookmarked, Optimized, Compressed, High Quality, HQ,
+DRM-free, DRM Free, No DRM, Cracked, 
+Kindle Edition, PDF version, EPUB version, MOBI version
+```
+
+#### Chinese Type Keywords
+```
+小说, 教材, 教程, 手册, 指南, 参考书, 文集, 论文集,
+丛书, 系列, 修订版, 第二版, 第三版, 增订版
+```
+
+#### Japanese Type Keywords
+```
+小説, 教科書, テキスト, ハンドブック, マニュアル, ガイド,
+講義, シリーズ, 改訂版, 第2版, 第3版
+```
+
+#### Special Patterns to Remove
+- Version patterns: `v1.0`, `version 2.0`, `Ver. 1.5`
+- Page count: `500 pages`, `500pp`, `500 P`
+- Language tags: `(English)`, `(中文)`, `(日本語)`, `English Edition`, `Chinese Edition`
 - Contains numbers with multiple non-letter characters (likely series info)
 - Matches pattern: `(YYYY, Publisher)` where YYYY is a year
+- Hash patterns (8+ hex chars or 16+ alphanumeric)
 
 ### 5. Author Detection Patterns
 

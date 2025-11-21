@@ -127,15 +127,18 @@ func removeSeriesPrefixes(s string) string {
 
 func cleanNoiseSources(s string) string {
 	patterns := []string{
-		// Z-Library variants
+		// Z-Library variants (with word boundaries and spacing)
+		`\s*[-\(]?\s*[zZ]-?Library\.pdf\b`,
 		`\s*[-\(]?\s*[zZ]-?Library\s*[)\.]?`,
 		`\s*\([zZ]-?Library\)`,
 		`\s*-\s*[zZ]-?Library`,
 		// libgen variants
+		`\s+libgen\.li\.pdf\b`,
 		`\s*[-\(]?\s*libgen(?:\.li)?\s*[)\.]?`,
 		`\s*\(libgen(?:\.li)?\)`,
 		`\s*-\s*libgen(?:\.li)?`,
 		// Anna's Archive variants
+		`\s+Anna'?s?\s*Archive\.pdf\b`,
 		`Anna'?s?\s*Archive`,
 		`\s*[-\(]?\s*Anna'?s?\s+Archive\s*[)\.]?`,
 		`\s*\(Anna'?s?\s+Archive\)`,
@@ -362,6 +365,9 @@ func cleanAuthorName(s string) string {
 func cleanTitle(s string) string {
 	s = strings.TrimSpace(s)
 
+	// Clean noise sources (Z-Library, libgen, etc.)
+	s = cleanNoiseSources(s)
+
 	// Remove (auth.)
 	s = trailingAuthRegex.ReplaceAllString(s, "")
 
@@ -379,16 +385,80 @@ func cleanTitle(s string) string {
 }
 
 func isPublisherOrSeriesInfo(s string) bool {
+	// Convert to lowercase for case-insensitive matching
+	sLower := strings.ToLower(s)
+	
+	// Expanded keyword list with multiple categories
 	publisherKeywords := []string{
-		"Press", "Publishing", "Academic Press", "Springer", "Cambridge", "Oxford", "MIT Press",
-		"Series", "Textbook Series", "Graduate Texts", "Graduate Studies", "Lecture Notes",
-		"Pure and Applied", "Mathematics", "Foundations of", "Monographs", "Studies", "Collection",
-		"Textbook", "Edition", "Vol.", "Volume", "No.", "Part", "理工", "出版社", "の",
-		"Z-Library", "libgen", "Anna's Archive",
+		// Publishers
+		"press", "publishing", "publisher", "academic press", "springer",
+		"cambridge", "oxford", "mit press", "wiley", "pearson", "mcgraw-hill",
+		"elsevier", "taylor & francis",
+		
+		// Series
+		"series", "textbook series", "graduate texts", "graduate studies",
+		"lecture notes", "pure and applied", "foundations of", "monographs",
+		"studies", "collection", "vol.", "volume", "no.", "part", "number",
+		
+		// General book types
+		"fiction", "novel", "textbook", "handbook", "manual", "guide",
+		"reference", "cookbook", "workbook", "encyclopedia", "dictionary",
+		"atlas", "anthology", "biography", "memoir", "essay", "essays",
+		"poetry", "drama", "short stories",
+		
+		// Academic types
+		"thesis", "dissertation", "proceedings", "conference", "symposium",
+		"workshop", "report", "technical report", "white paper", "preprint",
+		"manuscript", "lecture", "course notes", "study guide", "solutions manual",
+		
+		// Edition keywords
+		"edition", "revised edition", "updated edition", "expanded edition",
+		"abridged", "unabridged", "complete edition", "anniversary edition",
+		"collector's edition", "special edition", "1st ed", "2nd ed", "3rd ed",
+		
+		// Format/Quality indicators
+		"ocr", "scanned", "retail", "repack", "remastered", "searchable",
+		"bookmarked", "optimized", "compressed", "high quality", "hq",
+		"drm-free", "drm free", "no drm", "cracked",
+		"kindle edition", "pdf version", "epub version", "mobi version",
+		
+		// Chinese keywords
+		"小说", "教材", "教程", "手册", "指南", "参考书", "文集", "论文集",
+		"丛书", "系列", "修订版", "第二版", "第三版", "增订版",
+		"理工", "出版社",
+		
+		// Japanese keywords
+		"小説", "教科書", "テキスト", "ハンドブック", "マニュアル", "ガイド",
+		"講義", "シリーズ", "改訂版", "第2版", "第3版", "の",
+		
+		// Source markers
+		"z-library", "libgen", "anna's archive", "annas archive",
 	}
 
+	// Check for keywords (case-insensitive)
 	for _, k := range publisherKeywords {
-		if strings.Contains(s, k) {
+		if strings.Contains(sLower, k) {
+			return true
+		}
+	}
+
+	// Check for version patterns: v1.0, version 2.0, Ver. 1.5
+	if regexp.MustCompile(`\b(v|ver|version)\.?\s*\d+(\.\d+)*\b`).MatchString(sLower) {
+		return true
+	}
+
+	// Check for page count patterns: 500 pages, 500pp, 500 P
+	if regexp.MustCompile(`\b\d+\s*(?:pages?|pp?\.?|P)\b`).MatchString(sLower) {
+		return true
+	}
+
+	// Check for language tags
+	langPatterns := []string{
+		"english", "中文", "日本語", "deutsch", "français",
+		"english edition", "chinese edition", "japanese edition",
+	}
+	for _, pattern := range langPatterns {
+		if strings.Contains(sLower, pattern) {
 			return true
 		}
 	}

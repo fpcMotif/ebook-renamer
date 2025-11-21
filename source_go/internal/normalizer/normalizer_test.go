@@ -66,8 +66,15 @@ func TestCleanOrphanedBrackets(t *testing.T) {
 	// The Rust test expects: "Title  with ( orphaned ) brackets" (roughly)
 	// Actually Rust test just checks counts.
 
-	// Let's just assert that it doesn't have orphaned closing brackets
-	assert.NotContains(t, result, " ) ")
+	// Check that closing parens count <= opening parens count (no orphaned closing parens)
+	openCount := strings.Count(result, "(")
+	closeCount := strings.Count(result, ")")
+	assert.LessOrEqual(t, closeCount, openCount, "Should not have more closing parens than opening parens")
+	
+	// Check that opening brackets count <= closing brackets count (no orphaned opening brackets)
+	openBracketCount := strings.Count(result, "[")
+	closeBracketCount := strings.Count(result, "]")
+	assert.LessOrEqual(t, openBracketCount, closeBracketCount, "Should not have more opening brackets than closing brackets")
 }
 
 func TestParseAuthorBeforeTitleWithPublisher(t *testing.T) {

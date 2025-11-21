@@ -44,7 +44,11 @@ fn parse_filename(filename: &str, extension: &str) -> Result<ParsedMetadata> {
     base = remove_series_prefixes(&base);
 
     // Step 3: Remove ALL bracketed annotations [Lecture notes], [masters thesis], [expository notes], etc.
+    // Use a more robust pattern that handles unclosed brackets
     base = Regex::new(r"\s*\[[^\]]*\]").unwrap().replace_all(&base, "").to_string();
+    // Also remove any remaining unclosed brackets (single [ or ])
+    base = Regex::new(r"\s*\[[^\]]*$").unwrap().replace_all(&base, "").to_string();
+    base = Regex::new(r"^[^\[]*\]\s*").unwrap().replace_all(&base, "").to_string();
 
     // Step 4: Clean noise sources (Z-Library, libgen, Anna's Archive, hashes)
     // MUST happen BEFORE author parsing to avoid treating (Z-Library) as author
@@ -64,7 +68,10 @@ fn parse_filename(filename: &str, extension: &str) -> Result<ParsedMetadata> {
     // Keep only author names in parens if at the end
     base = clean_parentheticals(&base, year);
 
-    // Step 8: Parse author and title with smart pattern matching
+    // Step 8: Clean up any remaining orphaned brackets before parsing
+    base = clean_orphaned_brackets(&base);
+
+    // Step 9: Parse author and title with smart pattern matching
     let (authors, title) = smart_parse_author_title(&base);
 
     Ok(ParsedMetadata {
@@ -433,68 +440,97 @@ fn clean_title(s: &str) -> String {
     let re_trailing_id = Regex::new(r"[-_][A-Za-z0-9]{8,}$").unwrap();
     s = re_trailing_id.replace_all(&s, "").to_string();
 
-    // Clean up orphaned brackets/parens
+    // Clean up orphaned brackets/parens (removes ALL unmatched brackets)
     s = clean_orphaned_brackets(&s);
+
+    // Remove standalone single brackets/parens that might remain
+    // Pattern: space + single bracket/paren + space or end
+    let re_standalone_bracket = Regex::new(r"\s+[()[\]{}]\s*|\s*[()[\]{}]\s+").unwrap();
+    s = re_standalone_bracket.replace_all(&s, " ").to_string();
+    
+    // Remove leading/trailing single brackets
+    s = s.trim_start_matches(|c: char| c == '(' || c == '[' || c == '{').to_string();
+    s = s.trim_end_matches(|c: char| c == ')' || c == ']' || c == '}').to_string();
 
     // Remove multiple spaces
     let re_space = Regex::new(r"\s+").unwrap();
     s = re_space.replace_all(&s, " ").to_string();
 
-    // Remove leading/trailing punctuation
-    s = s.trim_matches(|c: char| c == '-' || c == ':' || c == ',' || c == ';' || c == '.').to_string();
+    // Remove leading/trailing punctuation and dashes
+    s = s.trim_matches(|c: char| {
+        c == '-' || c == ':' || c == ',' || c == ';' || c == '.' || 
+        c == '(' || c == '[' || c == '{' || c == ')' || c == ']' || c == '}'
+    }).to_string();
+
+    // Remove trailing dashes and colons that might be left from separators
+    let re_trailing_sep = Regex::new(r"[-:]\s*$").unwrap();
+    s = re_trailing_sep.replace_all(&s, "").to_string();
 
     s.trim().to_string()
 }
 
 fn clean_orphaned_brackets(s: &str) -> String {
     let s = s.trim();
-    let mut result = String::new();
-    let mut open_parens = 0;
-    let mut open_brackets = 0;
     let chars: Vec<char> = s.chars().collect();
-    let mut i = 0;
-
-    while i < chars.len() {
-        let c = chars[i];
-
-        match c {
+    let n = chars.len();
+    
+    // Track which characters to keep
+    let mut keep = vec![true; n];
+    let mut open_parens = Vec::new(); // Stack of indices for open parens
+    let mut open_brackets = Vec::new(); // Stack of indices for open brackets
+    
+    // First pass: match pairs and mark orphaned closing brackets
+    for i in 0..n {
+        match chars[i] {
             '(' => {
-                open_parens += 1;
-                result.push(c);
+                open_parens.push(i);
             }
             ')' => {
-                if open_parens > 0 {
-                    open_parens -= 1;
-                    result.push(c);
+                if let Some(_) = open_parens.pop() {
+                    // Matched pair, keep both
+                } else {
+                    // Orphaned closing paren, mark for removal
+                    keep[i] = false;
                 }
-                // Skip orphaned closing paren
             }
             '[' => {
-                open_brackets += 1;
-                result.push(c);
+                open_brackets.push(i);
             }
             ']' => {
-                if open_brackets > 0 {
-                    open_brackets -= 1;
-                    result.push(c);
+                if let Some(_) = open_brackets.pop() {
+                    // Matched pair, keep both
+                } else {
+                    // Orphaned closing bracket, mark for removal
+                    keep[i] = false;
                 }
-                // Skip orphaned closing bracket
             }
             '_' => {
-                // Replace underscores with spaces, then clean up
-                result.push(' ');
+                // Will be replaced with space later
             }
-            _ => result.push(c),
+            _ => {}
         }
-
-        i += 1;
     }
-
-    // Remove trailing orphaned opening brackets
-    while result.ends_with('(') || result.ends_with('[') {
-        result.pop();
+    
+    // Mark all unmatched opening brackets for removal
+    for &idx in &open_parens {
+        keep[idx] = false;
     }
-
+    for &idx in &open_brackets {
+        keep[idx] = false;
+    }
+    
+    // Build result, replacing underscores with spaces
+    let mut result = String::new();
+    for i in 0..n {
+        if keep[i] {
+            if chars[i] == '_' {
+                result.push(' ');
+            } else {
+                result.push(chars[i]);
+            }
+        }
+    }
+    
     result.trim().to_string()
 }
 
@@ -810,6 +846,103 @@ mod tests {
         assert_eq!(metadata.authors, Some("B. R. Tennison".to_string()));
         assert_eq!(metadata.title, "Sheaf Theory");
         assert!(!metadata.title.contains("London Mathematical"));
+    }
+
+    #[test]
+    fn test_orphaned_opening_paren() {
+        // Single opening paren in middle should be removed
+        let metadata = parse_filename(
+            "Book Title (Author Name.pdf",
+            ".pdf"
+        ).unwrap();
+        assert_eq!(metadata.authors, Some("Author Name".to_string()));
+        assert_eq!(metadata.title, "Book Title");
+        assert!(!metadata.title.contains("("));
+    }
+
+    #[test]
+    fn test_orphaned_closing_paren() {
+        // Single closing paren should be removed
+        let metadata = parse_filename(
+            "Book Title ) Author Name.pdf",
+            ".pdf"
+        ).unwrap();
+        // Should treat as title only since paren is removed
+        assert_eq!(metadata.title, "Book Title Author Name");
+        assert!(!metadata.title.contains(")"));
+    }
+
+    #[test]
+    fn test_multiple_orphaned_brackets() {
+        // Multiple orphaned brackets should all be removed
+        let result = clean_orphaned_brackets("Title ( with ) orphaned [ brackets ]");
+        assert!(!result.contains("("));
+        assert!(!result.contains(")"));
+        assert!(!result.contains("["));
+        assert!(!result.contains("]"));
+        assert_eq!(result, "Title with orphaned brackets");
+    }
+
+    #[test]
+    fn test_nested_orphaned_brackets() {
+        // Nested structure with some orphaned brackets
+        let result = clean_orphaned_brackets("Title (nested (content) orphaned");
+        // Should remove the orphaned opening paren
+        assert!(!result.contains("orphaned"));
+        assert!(result.contains("Title"));
+    }
+
+    #[test]
+    fn test_standalone_brackets_in_title() {
+        // Standalone brackets should be removed
+        let metadata = parse_filename(
+            "Book Title ( Author Name.pdf",
+            ".pdf"
+        ).unwrap();
+        assert!(!metadata.title.contains("("));
+        assert!(!metadata.title.contains(")"));
+    }
+
+    #[test]
+    fn test_unclosed_bracket_annotation() {
+        // Unclosed bracket annotation should be removed
+        let metadata = parse_filename(
+            "Book Title [Lecture notes (Author Name).pdf",
+            ".pdf"
+        ).unwrap();
+        assert_eq!(metadata.authors, Some("Author Name".to_string()));
+        assert!(!metadata.title.contains("["));
+        assert!(!metadata.title.contains("Lecture"));
+    }
+
+    #[test]
+    fn test_trailing_orphaned_paren() {
+        // Trailing orphaned paren should be removed
+        let metadata = parse_filename(
+            "Book Title (Author Name.pdf",
+            ".pdf"
+        ).unwrap();
+        assert_eq!(metadata.authors, Some("Author Name".to_string()));
+        assert_eq!(metadata.title, "Book Title");
+    }
+
+    #[test]
+    fn test_clean_title_removes_standalone_brackets() {
+        // Test that clean_title removes standalone brackets
+        let result = clean_title("Title ( standalone ) bracket");
+        assert!(!result.contains("("));
+        assert!(!result.contains(")"));
+        assert_eq!(result, "Title standalone bracket");
+    }
+
+    #[test]
+    fn test_complex_orphaned_brackets() {
+        // Complex case with multiple orphaned brackets
+        let result = clean_orphaned_brackets("Title (content) [unclosed (more");
+        assert!(!result.contains("["));
+        assert!(!result.contains("unclosed"));
+        assert!(result.contains("Title"));
+        assert!(result.contains("content"));
     }
 }
 

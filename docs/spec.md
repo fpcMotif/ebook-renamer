@@ -65,16 +65,17 @@ struct FileInfo {
 ## 3. Filename Normalization Rules
 
 ### Processing Order
-1. Remove `.download` suffix (if present)
-2. Remove extension suffix
-3. Strip leading/trailing whitespace
-4. Remove series prefixes
-5. Clean source indicators
-6. Extract year
-7. Remove year patterns from title
-8. Split authors and title
-9. Clean title components
-10. Generate new filename
+1. Remove `.download` suffix and trailing duplicate extensions (e.g., `.pdf.pdf`)
+2. Remove extension suffix and normalize surrounding whitespace
+3. **Normalize brackets/braces** – ensure `()`, `[]` are balanced by removing orphaned characters and turning `_` into spaces
+4. Remove series prefixes (see below)
+5. Clean structured noise (source markers, hashes/IDs, duplicate copy indicators, format/locale tags)
+6. Remove bracketed annotations `[...]`
+7. Extract year (last `19xx/20xx` match)
+8. Remove year-bearing or publisher/series parentheticals (preserve author-only parentheses)
+9. Split authors and title
+10. Clean author/title components
+11. Generate new filename
 
 ### Series Prefix Removal
 These exact prefixes are stripped with following `-` or space:
@@ -86,23 +87,26 @@ These exact prefixes are stripped with following `-` or space:
 - `[Progress in Mathematics №`
 - `[AMS Mathematical Surveys and Monographs`
 
-### Source Indicator Removal
-These exact suffixes are removed:
-- ` - libgen.li`
-- ` - libgen`
-- ` - Z-Library`
-- ` - z-Library`
-- ` - Anna's Archive`
-- ` (Z-Library)`
-- ` (z-Library)`
-- ` (libgen.li)`
-- ` (libgen)`
-- ` (Anna's Archive)`
-- ` libgen.li.pdf`
-- ` libgen.pdf`
-- ` Z-Library.pdf`
-- ` z-Library.pdf`
-- ` Anna's Archive.pdf`
+### Structured Noise Removal
+Noise cleanup runs before author parsing and is grouped为三类，可迭代多次直到字符串稳定：
+
+1. **Source markers**（下载站/抓取脚本）
+   - `Z-Library`, `z-Library`
+   - `libgen`, `libgen.li`
+   - `Anna's Archive`
+   - `pdfdrive`, `ebook-dl`, `BookZZ`, `VK`, `mega`, `Calibre`, `Kindle`, `Scribd`
+   - 任何形式的 `(<source>)`、`- <source>`、`<source>.pdf`
+2. **ID / 哈希 / 追踪片段**
+   - `--` 包裹的 8+ 位十六进制或 16+ 位字母数字
+   - `ISBN`, `ASIN`, `B0...`、`978...` 之类的末尾尾缀
+   - 纯数字/十六进制 token（≥8）位于名称尾部
+3. **复制/格式标签**
+   - `Copy`, `copy`, `副本`, `\(1\)`, `(2)` 等重复下载标记
+   - `(scan)`, `(scanned)`, `(ocr)`, `(color)`, `(bw)`
+   - `(English Edition)`, `(中文版)`, `(Kindle Edition)`, `(EPUB)`, `(PDF)`
+   - `[英文版]`, `[中文]`, `[高清]` 等语言/画质提示
+
+所有噪声模式匹配时必须连同周围空格/连字符一并删除并压缩多余空白。
 
 ### Year Extraction
 - Pattern: `\b(19|20)\d{2}\b`
@@ -125,13 +129,13 @@ These exact suffixes are removed:
 - Author name is cleaned by removing trailing `(auth.)` patterns
 
 ### Title Cleaning
-- Remove source indicators (same list as above)
+- Remove剩余来源或格式标记（仍沿用 Structured Noise 列表）
 - Remove `.download` suffixes
-- Remove `(auth.)` patterns
-- Clean orphaned brackets/parentheses
+- Remove `(auth.)` / `(author)` patterns
+- Clean orphaned brackets/parentheses（再次调用 bracket 正规化以防中途插入噪声造成破坏）
 - Replace underscores with spaces
 - Collapse multiple spaces to single space
-- Trim leading/trailing `- : , ;`
+- Trim leading/trailing `- : , ; .`
 
 ### Final Filename Format
 - With author and year: `Author - Title (Year).ext`

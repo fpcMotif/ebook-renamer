@@ -40,55 +40,53 @@ Examples:
   - `2020, Publisher` → `(2020)`
   - `Deadly Decision in Beijing. ... (1989 Tiananmen Massacre)` → include `(1989)` at end
 
-### 3. What to Remove
+### 3. What to Remove（按类别）
 
-#### Bracketed Annotations (Remove ALL)
-- `[Lecture notes]` → remove
-- `[Series info]` → remove
-- `[Graduate Texts in Mathematics]` → remove
-- Any content in square brackets `[...]`
+#### 3.1 Bracket Normalization
+- 先清理孤立 `(`、`)`、`[`、`]`，必要时直接删除无法闭合的部分
+- 将 `_` 视为空格，之后再压缩多余空格
 
-#### Publisher/Series Info (Remove ALL)
-- `(Pure and Applied Mathematics (Academic Press))` → remove
-- `(Springer)` → remove
-- `(Cambridge University Press)` → remove
-- `(Foundations of Computer Science)` → remove
-- Any parenthetical containing publisher keywords
+#### 3.2 Bracketed Annotations
+- `[Lecture notes]`, `[Series info]`, `[Graduate Texts in Mathematics]`
+- `[英文版]`, `[中文版]`, `[高清扫描]` 等语言/画质标记
 
-#### Source Markers (Remove ALL)
-- `- Z-Library`
-- `- libgen.li`
-- `- Anna's Archive`
-- `(Z-Library)`
-- `(libgen)`
-- Any variation of library/source names
+#### 3.3 Source Markers
+- `Z-Library`, `libgen`, `Anna's Archive`, `pdfdrive`, `ebook-dl`, `BookZZ`, `VK`, `mega`, `Calibre`, `Kindle`, `Scribd`
+- 任意 `(<source>)`、`- <source>`、`<source>.pdf` 变体
 
-#### Trailing ID Noise (Remove ALL)
-- Amazon ASINs: `-B0F5TFL6ZQ` → remove
-- ISBN-like: `-9780262046305` → remove
-- Pattern: `[-_]` followed by 8+ alphanumeric characters at end of filename
-- Only strip if it appears **after** the title/author portion
+#### 3.4 ID / Hash / 追踪信息
+- Amazon ASINs：`-B0F5TFL6ZQ`
+- ISBN：`-9780262046305`、`ISBN 978...`
+- `-- 32位hash --`、末尾 8+ 位十六进制/字母数字 token
 
-#### Other Patterns to Remove
-- `(auth.)` or `(Auth.)` → remove
-- `.download` suffix → remove
-- Multiple spaces → single space
-- Leading/trailing punctuation (dash, colon, comma, semicolon, period)
+#### 3.5 Duplicate/Format Markers
+- `Copy`, `copy`, `副本`, `(1)`, `(2)` 等重复下载序号
+- `(scan)`, `(scanned)`, `(ocr)`, `(color)`, `(bw)`
+- `(English Edition)`, `(Kindle Edition)`, `(EPUB)`, `(PDF)`, `(中文版)`
+
+#### 3.6 Publisher/Series Parentheses
+- 仅当括号内包含出版社关键词（见下）或“年份 + 出版社”模式才移除
+- 纯作者括号或与标题含义强相关的内容必须保留
+
+#### 3.7 其他噪声
+- `(auth.)` / `(Auth.)`
+- `.download` 或重复扩展名
+- 多余空格、前后 `- : , ; .`
 
 ### 4. Publisher/Series Detection Keywords
 
-If parenthetical content contains any of these keywords, remove it:
+移除括号内容需满足以下任一条件：
+1. 含下列关键词之一并且**不是**结尾作者括号：
+   ```
+   Press, Publishing, Academic Press, Springer, Cambridge, Oxford, MIT Press,
+   Series, Graduate Texts, Graduate Studies, Lecture Notes, Pure and Applied,
+   Monographs, Collection, Textbook, Edition, Vol., Volume, No., Part,
+   Verlag, Universitätsverlag, Université, 学, 出版社, 版社
+   ```
+2. 匹配 `(YYYY, <text>)` 或 `<text> (YYYY, <text>)`
+3. 以明显的卷/册/编号结构存在（含数字且非字母字符 ≥2）
 
-```
-Press, Publishing, Academic Press, Springer, Cambridge, Oxford, MIT Press,
-Series, Graduate Texts, Graduate Studies, Lecture Notes, Pure and Applied,
-Mathematics, Foundations of, Monographs, Studies, Collection, Textbook,
-Edition, Vol., Volume, No., Part
-```
-
-Also remove if:
-- Contains numbers with multiple non-letter characters (likely series info)
-- Matches pattern: `(YYYY, Publisher)` where YYYY is a year
+注意：一般词如 “Mathematics”、“Studies” 不再单独触发删除，除非与其他检测条件同时满足。
 
 ### 5. Author Detection Patterns
 
@@ -122,18 +120,17 @@ An author string is valid if:
 
 ### 7. Processing Order
 
-1. **Remove extension** (.pdf, .epub, .txt, .download)
-2. **Clean noise sources** (Z-Library, libgen, Anna's Archive patterns)
-3. **Remove ALL bracketed annotations** `[...]`
-4. **Extract year** (find last occurrence of 19xx/20xx)
-5. **Remove parentheticals** containing:
-   - Year patterns: `(YYYY, Publisher)` or `(YYYY)`
-   - Publisher/series keywords
-   - But preserve author names at the end
-6. **Parse author and title** using smart pattern matching
-7. **Clean author name** (handle commas, remove (auth.) patterns)
-8. **Clean title** (remove orphaned brackets, multiple spaces, trailing punctuation)
-9. **Generate final filename**: `Author - Title (Year).ext`
+1. Remove `.download` / 重复扩展名并裁空白
+2. Normalize brackets（平衡括号、替换 `_`、压缩多余空格）
+3. Remove series prefixes
+4. Clean structured noise（来源、ID、复制/格式标签）
+5. Remove ALL bracketed annotations `[...]`
+6. Extract year（最后一个 19xx/20xx）
+7. Remove含年份或 publisher 关键词的括号（保留作者括号）
+8. Parse author & title（含 trailing author、dash/colon、multiple author、semicolon）
+9. Clean author（逗号策略、去 `(auth.)`）
+10. Clean title（再次 bracket 规范化、去 ID、裁标点）
+11. Generate final filename
 
 ### 8. Edge Cases
 

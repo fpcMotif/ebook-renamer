@@ -7,36 +7,35 @@ Author, Author - Title (Year).ext
 
 ## Processing Pipeline
 
-1. Remove extension & `.download` suffix
-2. Remove source markers (Z-Library, libgen, Anna's Archive)
-3. Remove ALL `[...]` bracketed content
-4. Extract year (last 19xx/20xx found)
-5. Remove trailing ID noise (Amazon ASINs: `-B0F5TFL6ZQ`, `-9780262046305`, etc.)
-6. Remove parentheticals with:
+1. Remove `.download` + duplicate extensions, trim whitespace
+2. Normalize brackets（平衡 `()`、`[]`，把 `_` 变空格）确保结构健康
+3. Remove series prefixes
+4. Clean structured noise（来源/ID/复制与格式标签）
+5. Remove ALL `[...]` bracketed content
+6. Extract year（最后一个 19xx/20xx）
+7. Remove parentheticals with:
    - Year patterns: `(YYYY, Publisher)` or `(YYYY)`
-   - Publisher keywords (Press, Series, Academic Press, Textbook Series, etc.)
-   - Nested parentheticals: `(Pure and Applied (Academic Press))`
-   - Keep author names at end
-7. Parse author/title using patterns:
+   - Publisher keywords（需命中关键词且不是作者括号）
+   - Nested publisher blocks: `(Pure and Applied (Academic Press))`
+8. Parse author/title using patterns:
    - `Title (Author)` → trailing author
    - `Author - Title` → dash separator
    - `Author: Title` → colon separator
    - `Author1, Author2 - Title` → multi-author
-8. Clean author: smart comma handling
+9. Clean author: smart comma handling
    - `Marco, Grandis` → `Marco Grandis` (join if both single words)
    - `Thomas H. Wolff, Izabella Aba, Carol Shubin` → keep commas (multi-author)
-9. Clean title: remove orphaned brackets, multiple spaces, trailing punctuation
-10. Generate: `Author - Title (Year).ext`
+10. Clean title: 再次 bracket 规范化、去 `(auth.)`、ID、尾部标点
+11. Generate: `Author - Title (Year).ext`
 
 ## Key Removals
 
 **Remove:**
-- `[Lecture notes]`, `[Series info]` (all brackets)
-- `(Pure and Applied Mathematics)`, `(Academic Press)` (publisher info)
-- `- Z-Library`, `(libgen)` (source markers)
-- `-B0F5TFL6ZQ`, `-9780262046305` (trailing ID noise)
-- `(auth.)` patterns
-- `(YYYY, Publisher)` → keep only `(YYYY)`
+- `[Lecture notes]`, `[Series info]`, `[中文版]`（全部方括号说明）
+- `(Pure and Applied Mathematics (Academic Press))`, `(Springer)`, `(English Edition)`
+- `- Z-Library`, `(libgen)`, `-- hash --`, `-B0F5TFL6ZQ`, `ISBN 978...`
+- `(auth.)` / `(translator)`、`Copy (1)`、`(scan)` 等噪声
+- `(YYYY, Publisher)` → 只保留 `(YYYY)`
 
 **Keep:**
 - Author names in parentheses at end
@@ -45,12 +44,12 @@ Author, Author - Title (Year).ext
 - Original capitalization
 - Commas in multi-author lists
 
-## Publisher Keywords
+## Publisher Keywords（命中任一 + 非作者括号才删除）
 ```
 Press, Publishing, Academic Press, Springer, Cambridge, Oxford, MIT Press,
 Series, Textbook Series, Graduate Texts, Graduate Studies, Lecture Notes,
-Pure and Applied, Mathematics, Foundations of, Monographs, Studies, Collection,
-Textbook, Edition, Vol., Volume, No., Part
+Pure and Applied, Monographs, Collection, Textbook, Edition, Vol., Volume, No.,
+Part, Verlag, Universitätsverlag, Université, 学, 出版社, 版社
 ```
 
 ## Author Rules

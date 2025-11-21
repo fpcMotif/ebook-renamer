@@ -35,36 +35,41 @@ pub fn normalize_files(mut files: Vec<FileInfo>) -> Result<Vec<FileInfo>> {
 }
 
 fn parse_filename(filename: &str, extension: &str) -> Result<ParsedMetadata> {
-    // Step 1: Remove extension
-    let mut base = filename.strip_suffix(extension).unwrap_or(filename);
-    base = base.strip_suffix(".download").unwrap_or(base);
+    // Step 1: Remove .download suffix and duplicate extensions
+    let mut base = filename.to_string();
+    if base.ends_with(".download") {
+        base.truncate(base.len() - ".download".len());
+    }
+    if !extension.is_empty() {
+        while let Some(stripped) = base.strip_suffix(extension) {
+            base = stripped.trim_end().to_string();
+        }
+    }
     let mut base = base.trim().to_string();
 
-    // Step 2: Remove series prefixes (must be early, before other cleaning)
+    // Step 2: Normalize brackets/underscores early so later regexes see a stable structure
+    base = normalize_brackets_and_whitespace(&base);
+
+    // Step 3: Remove series prefixes (must be early, before other cleaning)
     base = remove_series_prefixes(&base);
 
-    // Step 3: Remove ALL bracketed annotations [Lecture notes], [masters thesis], [expository notes], etc.
+    // Step 4: Clean structured noise (sources, hashes, copy/format markers)
+    base = clean_structured_noise(&base);
+
+    // Step 5: Remove ALL bracketed annotations [Lecture notes], [masters thesis], [expository notes], etc.
     base = Regex::new(r"\s*\[[^\]]*\]").unwrap().replace_all(&base, "").to_string();
 
-    // Step 4: Clean noise sources (Z-Library, libgen, Anna's Archive, hashes)
-    // MUST happen BEFORE author parsing to avoid treating (Z-Library) as author
-    base = clean_noise_sources(&base);
+    // Step 6: Remove duplicate markers: -2, -3, Copy (1), (1), (2), etc.
+    base = remove_duplicate_markers(&base);
 
-    // Step 5: Remove duplicate markers: -2, -3, (1), (2), etc.
-    // But NOT years like (1978) or -1978
-    // These can appear at the end OR before a year in parens
-    base = Regex::new(r"[-\s]*\(\d{1,2}\)\s*$").unwrap().replace(&base, "").to_string();  // (1), (2) at end
-    base = Regex::new(r"-\d{1,2}\s*$").unwrap().replace(&base, "").to_string();  // -2, -3 at end
-    base = Regex::new(r"-\d{1,2}\s+\(").unwrap().replace(&base, " (").to_string();  // -2 before (year)
-
-    // Step 6: Extract year FIRST (most reliable)
+    // Step 7: Extract year FIRST (most reliable)
     let year = extract_year(&base);
 
-    // Step 7: Remove ALL parenthetical content that contains year or publisher info
+    // Step 8: Remove ALL parenthetical content that contains year or publisher info
     // Keep only author names in parens if at the end
     base = clean_parentheticals(&base, year);
 
-    // Step 8: Parse author and title with smart pattern matching
+    // Step 9: Parse author and title with smart pattern matching
     let (authors, title) = smart_parse_author_title(&base);
 
     Ok(ParsedMetadata {
@@ -102,45 +107,66 @@ fn remove_series_prefixes(s: &str) -> String {
     result.trim().to_string()
 }
 
-fn clean_noise_sources(s: &str) -> String {
-    // Remove trailing/embedded source markers comprehensively
-    // Includes: Z-Library, libgen, Anna's Archive, hashes, and ISBN-like patterns
-    let patterns = [
-        // Z-Library variants
-        r"\s*[-\(]?\s*[zZ]-?Library\s*[)\.]?",
-        r"\s*\([zZ]-?Library\)",
-        r"\s*-\s*[zZ]-?Library",
-        // libgen variants
-        r"\s*[-\(]?\s*libgen(?:\.li)?\s*[)\.]?",
-        r"\s*\(libgen(?:\.li)?\)",
-        r"\s*-\s*libgen(?:\.li)?",
-        // Anna's Archive variants (including stuck to other words)
-        r"Anna'?s?\s*Archive",  // Catches "Anna's Archive" or "AnnasArchive" or "AnnaArchive"
-        r"\s*[-\(]?\s*Anna'?s?\s+Archive\s*[)\.]?",
-        r"\s*\(Anna'?s?\s+Archive\)",
-        r"\s*-\s*Anna'?s?\s+Archive",
-        // Hash patterns (32 hex chars - MD5/SHA hashes)
+fn normalize_brackets_and_whitespace(s: &str) -> String {
+    let normalized = clean_orphaned_brackets(s);
+    let re_space = Regex::new(r"\s{2,}").unwrap();
+    re_space.replace_all(&normalized, " ").to_string().trim().to_string()
+}
+
+fn clean_structured_noise(s: &str) -> String {
+    // Remove trailing/embedded source markers, hashes/IDs, and duplicate/format tags
+    let source_patterns = [
+        r"(?i)\s*[-–—\(]?\s*z-?library\s*(?:\.pdf)?\s*[)\.]?",
+        r"(?i)\s*[-–—\(]?\s*libgen(?:\.li)?\s*(?:\.pdf)?\s*[)\.]?",
+        r"(?i)\s*[-–—\(]?\s*anna'?s?\s+archive\s*(?:\.pdf)?\s*[)\.]?",
+        r"(?i)\s*[-–—\(]?\s*(?:pdfdrive|ebook-dl|bookzz|vk|mega|calibre|kindle|scribd)\s*(?:\.pdf)?\s*[)\.]?",
+    ];
+    let id_patterns = [
         r"\s*--\s*[a-f0-9]{32}\s*(?:--)?",
-        // ISBN-like patterns (10-13 digits)
         r"\s*--\s*\d{10,13}\s*(?:--)?",
-        // Long alphanumeric IDs (16+ chars)
         r"\s*--\s*[A-Za-z0-9]{16,}\s*(?:--)?",
-        // Shorter hash patterns (8+ hex chars)
-        r"\s*--\s*[a-f0-9]{8,}\s*(?:--)?",
+        r"(?i)\bISBN(?:-1[03])?\s*[:\-]?\s*\d{9,13}\b",
+        r"(?i)\bASIN\s*[:\-]?\s*[A-Z0-9]{10}\b",
+    ];
+    let format_patterns = [
+        r"(?i)\s*\(\s*(?:scan(?:ned)?|ocr|color|colour|bw|b/w)\s*\)\s*",
+        r"(?i)\s*\(\s*(?:english edition|kindle edition|epub|pdf)\s*\)\s*",
+        r"\s*\(\s*(?:中文版|中文|英文版|简体|繁體)\s*\)\s*",
     ];
     
     let mut result = s.to_string();
-    // Apply patterns multiple times to handle consecutive patterns
     for _ in 0..3 {
         let before = result.clone();
-        for pattern in &patterns {
+        for pattern in source_patterns.iter().chain(id_patterns.iter()).chain(format_patterns.iter()) {
             let re = Regex::new(pattern).unwrap();
-            result = re.replace_all(&result, "").to_string();
+            result = re.replace_all(&result, " ").to_string();
         }
         if result == before {
             break;
         }
     }
+    
+    let re_space = Regex::new(r"\s{2,}").unwrap();
+    re_space.replace_all(&result, " ").to_string().trim().to_string()
+}
+
+fn remove_duplicate_markers(s: &str) -> String {
+    let mut result = s.to_string();
+    let end_patterns = [
+        r"(?i)\s*\bcopy\b(?:\s*\(\d+\))?\s*$",
+        r"\s*副本\s*\d*\s*$",
+        r"\s*[-\s]*\(\d{1,2}\)\s*$",
+        r"\s*-\d{1,2}\s*$",
+    ];
+    
+    for pattern in &end_patterns {
+        let re = Regex::new(pattern).unwrap();
+        result = re.replace_all(&result, "").to_string();
+    }
+    
+    // Handle "-2 (" before a year/parenthetical by collapsing the dash
+    let re_before_paren = Regex::new(r"-\d{1,2}\s+\(").unwrap();
+    result = re_before_paren.replace_all(&result, " (").to_string();
     
     result.trim().to_string()
 }
@@ -361,58 +387,89 @@ fn clean_author_name(s: &str) -> String {
 }
 
 fn is_publisher_or_series_info(s: &str) -> bool {
-    // Common publisher/series keywords
-    let publisher_keywords = [
-        "Press",
-        "Publishing",
-        "Academic Press",
-        "Springer",
-        "Cambridge",
-        "Oxford",
-        "MIT Press",
-        "Series",
-        "Textbook Series",
-        "Graduate Texts",
-        "Graduate Studies",
-        "Lecture Notes",
-        "Pure and Applied",
-        "Mathematics",
-        "Foundations of",
-        "Monographs",
-        "Studies",
-        "Collection",
-        "Textbook",
-        "Edition",
-        "Vol.",
-        "Volume",
-        "No.",
-        "Part",
-        "理工",
-        "出版社",
-        "の",  // Japanese "no" (of)
-        "Z-Library",
+    let trimmed = s.trim_matches(|c| c == '(' || c == ')' || c == '[' || c == ']').trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let lower = trimmed.to_lowercase();
+    
+    const STRONG_KEYWORDS: [&str; 18] = [
+        "press",
+        "publishing",
+        "academic press",
+        "springer",
+        "cambridge",
+        "oxford",
+        "mit press",
+        "graduate texts",
+        "graduate studies",
+        "lecture notes",
+        "textbook series",
+        "series",
+        "monographs",
+        "collection",
+        "textbook",
+        "edition",
+        "verlag",
+        "universitätsverlag",
+    ];
+    const WEAK_KEYWORDS: [&str; 6] = [
+        "mathematics",
+        "studies",
+        "science",
+        "engineering",
+        "foundations of",
+        "pure and applied",
+    ];
+    const FORMAT_KEYWORDS: [&str; 14] = [
+        "english edition",
+        "kindle edition",
+        "epub",
+        "pdf",
+        "scan",
+        "scanned",
+        "ocr",
+        "color",
+        "colour",
+        "bw",
+        "b/w",
+        "中文版",
+        "中文",
+        "英文版",
+    ];
+    const SOURCE_KEYWORDS: [&str; 5] = [
+        "z-library",
         "libgen",
-        "Anna's Archive",
+        "anna's archive",
+        "pdfdrive",
+        "ebook-dl",
     ];
     
-    // If contains publisher keywords, it's likely publisher info
-    for keyword in &publisher_keywords {
-        if s.contains(keyword) {
-            return true;
-        }
-    }
-    
-    // Detect hash patterns: 8+ hex chars or 16+ alphanumeric
-    if Regex::new(r"[a-f0-9]{8,}").unwrap().is_match(s) && s.len() > 8 {
+    if STRONG_KEYWORDS.iter().any(|kw| lower.contains(kw)) {
         return true;
     }
-    if Regex::new(r"[A-Za-z0-9]{16,}").unwrap().is_match(s) && s.len() > 16 {
+    if FORMAT_KEYWORDS.iter().any(|kw| lower.contains(kw) || trimmed.contains(kw)) {
+        return true;
+    }
+    if SOURCE_KEYWORDS.iter().any(|kw| lower.contains(kw)) {
         return true;
     }
     
-    // If it contains mostly non-letter characters with numbers, likely series info
-    let has_numbers = s.chars().any(|c| c.is_ascii_digit());
-    let non_letter_count = s.chars().filter(|c| !c.is_alphabetic() && *c != ' ').count();
+    let has_numbers = trimmed.chars().any(|c| c.is_ascii_digit());
+    let non_letter_count = trimmed.chars().filter(|c| !c.is_alphabetic() && *c != ' ').count();
+    let has_volume_hint = lower.contains("vol") || lower.contains("volume") || lower.contains("no.") || lower.contains("part");
+    
+    if WEAK_KEYWORDS.iter().any(|kw| lower.contains(kw)) && (has_numbers || has_volume_hint) {
+        return true;
+    }
+    
+    // Detect hash/ID patterns that snuck through
+    if Regex::new(r"[a-f0-9]{8,}").unwrap().is_match(trimmed) && trimmed.len() > 8 {
+        return true;
+    }
+    if Regex::new(r"[A-Za-z0-9]{16,}").unwrap().is_match(trimmed) && trimmed.len() > 16 {
+        return true;
+    }
     if has_numbers && non_letter_count > 2 {
         return true;
     }
@@ -422,6 +479,8 @@ fn is_publisher_or_series_info(s: &str) -> bool {
 
 fn clean_title(s: &str) -> String {
     let mut s = s.trim().to_string();
+
+    s = clean_structured_noise(&s);
 
     // Remove (auth.) patterns
     let re_auth = Regex::new(r"\s*\([Aa]uth\.?\)").unwrap();
@@ -447,54 +506,46 @@ fn clean_title(s: &str) -> String {
 }
 
 fn clean_orphaned_brackets(s: &str) -> String {
-    let s = s.trim();
-    let mut result = String::new();
-    let mut open_parens = 0;
-    let mut open_brackets = 0;
-    let chars: Vec<char> = s.chars().collect();
-    let mut i = 0;
+    let mut chars: Vec<char> = Vec::new();
+    let mut paren_stack: Vec<usize> = Vec::new();
+    let mut bracket_stack: Vec<usize> = Vec::new();
 
-    while i < chars.len() {
-        let c = chars[i];
-
+    for c in s.trim().chars() {
         match c {
             '(' => {
-                open_parens += 1;
-                result.push(c);
+                paren_stack.push(chars.len());
+                chars.push('(');
             }
             ')' => {
-                if open_parens > 0 {
-                    open_parens -= 1;
-                    result.push(c);
+                if paren_stack.pop().is_some() {
+                    chars.push(')');
                 }
                 // Skip orphaned closing paren
             }
             '[' => {
-                open_brackets += 1;
-                result.push(c);
+                bracket_stack.push(chars.len());
+                chars.push('[');
             }
             ']' => {
-                if open_brackets > 0 {
-                    open_brackets -= 1;
-                    result.push(c);
+                if bracket_stack.pop().is_some() {
+                    chars.push(']');
                 }
-                // Skip orphaned closing bracket
             }
-            '_' => {
-                // Replace underscores with spaces, then clean up
-                result.push(' ');
-            }
-            _ => result.push(c),
+            '_' => chars.push(' '),
+            _ => chars.push(c),
         }
-
-        i += 1;
     }
 
-    // Remove trailing orphaned opening brackets
-    while result.ends_with('(') || result.ends_with('[') {
-        result.pop();
+    // Remove positions that were never closed
+    for idx in paren_stack.into_iter().chain(bracket_stack.into_iter()) {
+        if idx < chars.len() {
+            chars[idx] = ' ';
+        }
     }
 
+    let mut result: String = chars.into_iter().collect();
+    let re_space = Regex::new(r"\s{2,}").unwrap();
+    result = re_space.replace_all(&result, " ").to_string();
     result.trim().to_string()
 }
 
@@ -578,8 +629,7 @@ mod tests {
     #[test]
     fn test_clean_orphaned_brackets() {
         let result = clean_orphaned_brackets("Title ) with ( orphaned ) brackets [");
-        // Orphaned closing should be removed
-        assert!(result.chars().filter(|&c| c == ')').count() <= result.chars().filter(|&c| c == '(').count());
+        assert_eq!(result, "Title with ( orphaned ) brackets");
     }
 
     #[test]
@@ -628,6 +678,10 @@ mod tests {
             ("Title -", "Title"),
             ("Title :", "Title"),
             ("Title ;", "Title"),
+            ("Title - pdfdrive", "Title"),
+            ("Title Copy (1)", "Title"),
+            ("Title (Kindle Edition)", "Title"),
+            ("Title (中文版)", "Title"),
         ];
 
         for (input, expected) in test_cases {
@@ -785,6 +839,45 @@ mod tests {
         assert_eq!(metadata.authors, Some("Mani Mehra".to_string()));
         assert_eq!(metadata.title, "Wavelets Theory and Its Applications A First Course");
         assert!(!metadata.title.contains("Z-Library"));
+    }
+
+    #[test]
+    fn test_pdfdrive_marker_removed() {
+        let metadata = parse_filename(
+            "Jane Doe - Example Title - pdfdrive.pdf",
+            ".pdf"
+        ).unwrap();
+        assert_eq!(metadata.authors, Some("Jane Doe".to_string()));
+        assert_eq!(metadata.title, "Example Title");
+    }
+
+    #[test]
+    fn test_copy_suffix_removed() {
+        let metadata = parse_filename(
+            "John Smith - Sample Title Copy (1).pdf",
+            ".pdf"
+        ).unwrap();
+        assert_eq!(metadata.authors, Some("John Smith".to_string()));
+        assert_eq!(metadata.title, "Sample Title");
+    }
+
+    #[test]
+    fn test_unmatched_parenthesis_is_cleaned() {
+        let metadata = parse_filename(
+            "Great Book (Jane Doe.pdf",
+            ".pdf"
+        ).unwrap();
+        assert!(metadata.authors.is_none());
+        assert_eq!(metadata.title, "Great Book Jane Doe");
+    }
+
+    #[test]
+    fn test_mathematics_parenthetical_not_removed_when_generic() {
+        let metadata = parse_filename(
+            "Thinking in Mathematics (Mathematics Education).pdf",
+            ".pdf"
+        ).unwrap();
+        assert!(metadata.title.contains("Mathematics Education"));
     }
 
     #[test]

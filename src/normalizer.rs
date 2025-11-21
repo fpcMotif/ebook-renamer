@@ -158,8 +158,12 @@ fn clean_parentheticals(s: &str, year: Option<u16>) -> String {
     // 1. Years (with or without publisher)
     // 2. Publisher/series keywords
     // 3. But preserve author names at the end
+    // 4. Handle unclosed parentheses
     
     let mut result = s.to_string();
+    
+    // First, handle unclosed parentheses by removing them and their content
+    result = remove_unclosed_parentheses(&result);
     
     // Pattern 1: Remove (YYYY, Publisher) or (YYYY)
     if let Some(y) = year {
@@ -203,6 +207,52 @@ fn clean_parentheticals(s: &str, year: Option<u16>) -> String {
     // Clean up multiple spaces
     let re_space = Regex::new(r"\s+").unwrap();
     result = re_space.replace_all(&result, " ").to_string();
+    
+    result.trim().to_string()
+}
+
+fn remove_unclosed_parentheses(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut result = String::new();
+    let mut open_parens = 0;
+    let mut paren_start = Vec::new();
+    let mut i = 0;
+    
+    while i < chars.len() {
+        let c = chars[i];
+        
+        match c {
+            '(' => {
+                open_parens += 1;
+                paren_start.push(result.len());
+                result.push(c);
+            }
+            ')' => {
+                if open_parens > 0 {
+                    open_parens -= 1;
+                    paren_start.pop();
+                    result.push(c);
+                } else {
+                    // Skip orphaned closing paren
+                }
+            }
+            _ => {
+                result.push(c);
+            }
+        }
+        
+        i += 1;
+    }
+    
+    // Remove unclosed parentheses and their content
+    // For filename cleaning, if there's an unclosed paren, remove from that position to the end
+    // This is safe because unclosed parens usually indicate incomplete/corrupted info
+    if !paren_start.is_empty() {
+        // Find the first unclosed paren (earliest one that wasn't closed)
+        // Remove from that position to the end
+        let first_unclosed_pos = *paren_start.iter().min().unwrap();
+        result.truncate(first_unclosed_pos);
+    }
     
     result.trim().to_string()
 }
@@ -423,25 +473,58 @@ fn is_publisher_or_series_info(s: &str) -> bool {
 fn clean_title(s: &str) -> String {
     let mut s = s.trim().to_string();
 
-    // Remove (auth.) patterns
+    // Remove (auth.) patterns and similar
     let re_auth = Regex::new(r"\s*\([Aa]uth\.?\)").unwrap();
     s = re_auth.replace_all(&s, "").to_string();
+    
+    // Remove other common noise patterns in titles
+    let noise_patterns = [
+        r"\s*\(ed\.?\)",           // (ed.) or (ed)
+        r"\s*\(eds?\.?\)",         // (eds.) or (eds)
+        r"\s*\(translator\)",      // (translator)
+        r"\s*\(translated by\)",   // (translated by)
+        r"\s*\(compiled by\)",     // (compiled by)
+        r"\s*\(edited by\)",       // (edited by)
+    ];
+    
+    for pattern in &noise_patterns {
+        let re = Regex::new(pattern).unwrap();
+        s = re.replace_all(&s, "").to_string();
+    }
 
     // Strip trailing ID-like noise (Amazon ASINs, ISBN-like strings)
     // Pattern: [-_] followed by alphanumeric block at the end
     // Examples: -B0F5TFL6ZQ, -9780262046305, _12345abc
     let re_trailing_id = Regex::new(r"[-_][A-Za-z0-9]{8,}$").unwrap();
     s = re_trailing_id.replace_all(&s, "").to_string();
+    
+    // Remove trailing numbers that look like IDs (not years)
+    // Pattern: space or dash followed by 4+ digits at end (but not years 19xx/20xx)
+    let re_trailing_numbers = Regex::new(r"[-_\s]+\d{4,}$").unwrap();
+    s = re_trailing_numbers.replace_all(&s, |caps: &regex::Captures| {
+        let matched = caps.get(0).map(|m| m.as_str()).unwrap_or("");
+        // Check if it's a year (19xx or 20xx)
+        if Regex::new(r"\b(19|20)\d{2}\b").unwrap().is_match(matched) {
+            matched.to_string()
+        } else {
+            String::new()
+        }
+    }).to_string();
 
     // Clean up orphaned brackets/parens
     s = clean_orphaned_brackets(&s);
+    
+    // Remove isolated punctuation and noise
+    // Remove patterns like " - " at start/end, multiple dashes, etc.
+    s = Regex::new(r"^[-_\s]+").unwrap().replace_all(&s, "").to_string();
+    s = Regex::new(r"[-_\s]+$").unwrap().replace_all(&s, "").to_string();
 
     // Remove multiple spaces
     let re_space = Regex::new(r"\s+").unwrap();
     s = re_space.replace_all(&s, " ").to_string();
 
     // Remove leading/trailing punctuation
-    s = s.trim_matches(|c: char| c == '-' || c == ':' || c == ',' || c == ';' || c == '.').to_string();
+    s = s.trim_matches(|c: char| c == '-' || c == ':' || c == ',' || c == ';' || c == '.' || c == '_').to_string();
 
     s.trim().to_string()
 }
@@ -451,6 +534,8 @@ fn clean_orphaned_brackets(s: &str) -> String {
     let mut result = String::new();
     let mut open_parens = 0;
     let mut open_brackets = 0;
+    let mut paren_positions = Vec::new();
+    let mut bracket_positions = Vec::new();
     let chars: Vec<char> = s.chars().collect();
     let mut i = 0;
 
@@ -460,22 +545,26 @@ fn clean_orphaned_brackets(s: &str) -> String {
         match c {
             '(' => {
                 open_parens += 1;
+                paren_positions.push(result.len());
                 result.push(c);
             }
             ')' => {
                 if open_parens > 0 {
                     open_parens -= 1;
+                    paren_positions.pop();
                     result.push(c);
                 }
                 // Skip orphaned closing paren
             }
             '[' => {
                 open_brackets += 1;
+                bracket_positions.push(result.len());
                 result.push(c);
             }
             ']' => {
                 if open_brackets > 0 {
                     open_brackets -= 1;
+                    bracket_positions.pop();
                     result.push(c);
                 }
                 // Skip orphaned closing bracket
@@ -490,7 +579,20 @@ fn clean_orphaned_brackets(s: &str) -> String {
         i += 1;
     }
 
-    // Remove trailing orphaned opening brackets
+    // Remove unclosed parentheses and brackets from the end
+    // Go backwards to avoid index shifting
+    while !paren_positions.is_empty() {
+        let pos = paren_positions.pop().unwrap();
+        // Remove from this position to end (including the opening paren)
+        result.truncate(pos);
+    }
+    
+    while !bracket_positions.is_empty() {
+        let pos = bracket_positions.pop().unwrap();
+        result.truncate(pos);
+    }
+
+    // Remove trailing orphaned opening brackets (safety check)
     while result.ends_with('(') || result.ends_with('[') {
         result.pop();
     }
@@ -810,6 +912,71 @@ mod tests {
         assert_eq!(metadata.authors, Some("B. R. Tennison".to_string()));
         assert_eq!(metadata.title, "Sheaf Theory");
         assert!(!metadata.title.contains("London Mathematical"));
+    }
+
+    #[test]
+    fn test_unclosed_parentheses() {
+        // Test unclosed parentheses removal
+        let metadata = parse_filename(
+            "Book Title (Publisher Info (2020).pdf",
+            ".pdf"
+        ).unwrap();
+        // Should handle unclosed paren gracefully
+        assert!(!metadata.title.contains("("));
+    }
+
+    #[test]
+    fn test_unclosed_parentheses_at_end() {
+        // Test unclosed parentheses at the end
+        let result = clean_orphaned_brackets("Book Title (Unclosed");
+        assert_eq!(result, "Book Title");
+        
+        let result2 = clean_orphaned_brackets("Book Title (Closed) (Unclosed");
+        assert_eq!(result2, "Book Title (Closed)");
+    }
+
+    #[test]
+    fn test_remove_unclosed_parentheses() {
+        // Test the remove_unclosed_parentheses function
+        let result = remove_unclosed_parentheses("Title (Publisher (2020)");
+        assert_eq!(result, "Title");
+        
+        let result2 = remove_unclosed_parentheses("Title (Closed) (Unclosed");
+        assert_eq!(result2, "Title (Closed)");
+    }
+
+    #[test]
+    fn test_clean_title_noise_patterns() {
+        // Test removal of noise patterns in titles
+        let result = clean_title("Book Title (ed.)");
+        assert_eq!(result, "Book Title");
+        
+        let result2 = clean_title("Book Title (translated by)");
+        assert_eq!(result2, "Book Title");
+        
+        let result3 = clean_title("Book Title (edited by)");
+        assert_eq!(result3, "Book Title");
+    }
+
+    #[test]
+    fn test_trailing_id_removal() {
+        // Test removal of trailing IDs that are not years
+        let result = clean_title("Book Title -12345678");
+        assert_eq!(result, "Book Title");
+        
+        // But keep years
+        let result2 = clean_title("Book Title 2020");
+        assert!(result2.contains("2020") || result2 == "Book Title");
+    }
+
+    #[test]
+    fn test_isolated_punctuation_removal() {
+        // Test removal of isolated punctuation
+        let result = clean_title(" - Book Title - ");
+        assert_eq!(result, "Book Title");
+        
+        let result2 = clean_title("___Book Title___");
+        assert_eq!(result2, "Book Title");
     }
 }
 

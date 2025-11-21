@@ -133,6 +133,11 @@ func removeSeriesPrefixes(s string) string {
 
 func cleanNoiseSources(s string) string {
 	patterns := []string{
+		// Special cases: source markers with .pdf suffix
+		`(?i)\s+libgen\.li\.pdf\b`,
+		`(?i)\s+libgen\.pdf\b`,
+		`(?i)\s+[zZ]-?Library\.pdf\b`,
+		`(?i)\s+Anna'?s?\s+Archive\.pdf\b`,
 		// Z-Library variants (case insensitive)
 		`(?i)\s*[-\(]?\s*[zZ]-?Library\s*[)\.]?`,
 		`(?i)\s*\([zZ]-?Library\)`,
@@ -194,7 +199,7 @@ func cleanExtendedNoise(s string) string {
 		`(?i)\s*-?\s*ISBN[-:\s]*\d[\d\-]{8,}`,
 		// Duplicate markers
 		`(?i)\s*[-_]\s*[Cc]opy\s+\d+`,
-		`\s*\(\d{1,2}\)\s*(?=\.|$)`,
+		`\s*\(\d{1,2}\)\s*$`,
 	}
 
 	result := s
@@ -404,6 +409,9 @@ func cleanAuthorName(s string) string {
 
 func cleanTitle(s string) string {
 	s = strings.TrimSpace(s)
+
+	// Remove noise sources (Z-Library, etc.)
+	s = cleanNoiseSources(s)
 
 	// Remove (auth.)
 	s = trailingAuthRegex.ReplaceAllString(s, "")

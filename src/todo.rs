@@ -308,5 +308,104 @@ Other text
 
         Ok(())
     }
-}
 
+    #[test]
+    fn test_add_failed_download() -> Result<()> {
+        let tmp_dir = TempDir::new()?;
+        let mut todo_list = TodoList::new(&None, &tmp_dir.path().to_path_buf())?;
+
+        let file_info = FileInfo {
+            original_path: tmp_dir.path().join("fail.download"),
+            original_name: "fail.download".to_string(),
+            extension: ".download".to_string(),
+            size: 0,
+            modified_time: std::time::SystemTime::now(),
+            is_failed_download: true,
+            is_too_small: false,
+            new_name: None,
+            new_path: tmp_dir.path().join("fail.download"),
+        };
+
+        todo_list.add_failed_download(&file_info)?;
+
+        assert_eq!(todo_list.failed_downloads.len(), 1);
+        assert!(todo_list.failed_downloads[0].contains("fail.download"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_remove_file_from_todo() -> Result<()> {
+        let tmp_dir = TempDir::new()?;
+        let mut todo_list = TodoList::new(&None, &tmp_dir.path().to_path_buf())?;
+
+        // Add item manually to internal lists
+        let item = "重新下载: test_file.pdf (未完成下载)".to_string();
+        todo_list.failed_downloads.push(item.clone());
+        todo_list.items.push(item);
+
+        todo_list.remove_file_from_todo("test_file.pdf");
+
+        assert!(todo_list.failed_downloads.is_empty());
+        assert!(todo_list.items.is_empty());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_analyze_file_integrity_corrupted_pdf() -> Result<()> {
+        let tmp_dir = TempDir::new()?;
+        let pdf_path = tmp_dir.path().join("corrupt.pdf");
+        // Write invalid header
+        fs::write(&pdf_path, "NOT PDF content")?;
+
+        let mut todo_list = TodoList::new(&None, &tmp_dir.path().to_path_buf())?;
+
+        let file_info = FileInfo {
+            original_path: pdf_path.clone(),
+            original_name: "corrupt.pdf".to_string(),
+            extension: ".pdf".to_string(),
+            size: 100,
+            modified_time: std::time::SystemTime::now(),
+            is_failed_download: false,
+            is_too_small: false,
+            new_name: None,
+            new_path: pdf_path,
+        };
+
+        todo_list.analyze_file_integrity(&file_info)?;
+
+        assert_eq!(todo_list.corrupted_files.len(), 1);
+        assert!(todo_list.corrupted_files[0].contains("corrupt.pdf"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_analyze_file_integrity_valid_pdf() -> Result<()> {
+        let tmp_dir = TempDir::new()?;
+        let pdf_path = tmp_dir.path().join("valid.pdf");
+        // Write valid header
+        fs::write(&pdf_path, "%PDF-1.4 content")?;
+
+        let mut todo_list = TodoList::new(&None, &tmp_dir.path().to_path_buf())?;
+
+        let file_info = FileInfo {
+            original_path: pdf_path.clone(),
+            original_name: "valid.pdf".to_string(),
+            extension: ".pdf".to_string(),
+            size: 100,
+            modified_time: std::time::SystemTime::now(),
+            is_failed_download: false,
+            is_too_small: false,
+            new_name: None,
+            new_path: pdf_path,
+        };
+
+        todo_list.analyze_file_integrity(&file_info)?;
+
+        assert!(todo_list.corrupted_files.is_empty());
+
+        Ok(())
+    }
+}

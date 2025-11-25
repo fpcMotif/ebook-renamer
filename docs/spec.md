@@ -225,7 +225,7 @@ When multiple files have identical MD5 hash:
   "small_or_corrupted_deletes": [
     {
       "path": "path/to/small.ext",
-      "issue": "deleted"
+      "issue": "failed_download_cleanup"
     }
   ],
   "todo_items": [
@@ -252,7 +252,7 @@ When multiple files have identical MD5 hash:
 For cross-language consistency, all JSON arrays are sorted deterministically:
 - `renames`: sorted by `from` field (lexicographically)
 - `duplicate_deletes`: sorted by `keep` field, with `delete` arrays sorted internally
-- `small_or_corrupted_deletes`: sorted by `path` field
+- `small_or_corrupted_deletes`: sorted by `path` field；`issue` 目前会是 `failed_download_cleanup`（自动清除未完成下载）或 `too_small_auto_delete`（配合 `--delete-small`）
 - `todo_items`: sorted by `category` field, then by `file` field
 
 ## 7. Edge Cases and Current Limitations

@@ -50,7 +50,7 @@ impl OperationsOutput {
     pub fn from_results(
         clean_files: Vec<FileInfo>,
         duplicate_groups: Vec<Vec<PathBuf>>,
-        files_to_delete: Vec<PathBuf>,
+        deletion_operations: Vec<(PathBuf, String)>,
         todo_items: Vec<(String, String, String)>, // (category, file, message)
         target_dir: &PathBuf,
     ) -> Result<Self> {
@@ -106,14 +106,14 @@ impl OperationsOutput {
 
         // Add small/corrupted deletions
         let mut small_deletes = Vec::new();
-        for path in files_to_delete {
+        for (path, issue_key) in deletion_operations {
             let path_str = path.strip_prefix(target_dir)
                 .unwrap_or(&path)
                 .to_string_lossy()
                 .to_string();
             small_deletes.push(DeleteOperation {
                 path: path_str,
-                issue: "deleted".to_string(),
+                issue: issue_key,
             });
         }
         // Sort by path for deterministic output
@@ -206,7 +206,7 @@ mod tests {
             target_dir.join("delete.pdf"),
         ];
 
-        let files_to_delete = vec![target_dir.join("small.pdf")];
+        let files_to_delete = vec![(target_dir.join("small.pdf"), "too_small_auto_delete".to_string())];
 
         let todo_items = vec![
             ("Category".to_string(), "todo.pdf".to_string(), "Check me".to_string())

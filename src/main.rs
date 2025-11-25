@@ -12,6 +12,22 @@ use cli::Args;
 use log::info;
 use download_recovery::DownloadRecovery;
 use colored::*;
+use std::path::PathBuf;
+
+#[derive(Clone)]
+enum DeleteReason {
+    TooSmall,
+    FailedDownloadCleanup,
+}
+
+impl DeleteReason {
+    fn issue_key(&self) -> &'static str {
+        match self {
+            DeleteReason::TooSmall => "too_small_auto_delete",
+            DeleteReason::FailedDownloadCleanup => "failed_download_cleanup",
+        }
+    }
+}
 
 fn main() -> Result<()> {
     env_logger::Builder::from_default_env()
@@ -65,31 +81,50 @@ fn main() -> Result<()> {
 
     // Handle failed downloads and small files
     let mut todo_list = todo::TodoList::new(&args.todo_file, &args.path)?;
-    let mut files_to_delete = Vec::new();
+    let mut pending_deletions: Vec<(PathBuf, DeleteReason)> = Vec::new();
     let mut todo_items = Vec::new();
     
     for file_info in &normalized {
-        // Add existing failed/too small files
-        if file_info.is_failed_download || file_info.is_too_small {
+        if file_info.is_failed_download {
+            todo_list.add_failed_download(file_info)?;
+            let message = format!("重新下载: {} (未完成下载)", file_info.original_name);
+            todo_items.push((
+                "failed_download".to_string(),
+                file_info.original_name.clone(),
+                message,
+            ));
+            pending_deletions.push((
+                file_info.original_path.clone(),
+                DeleteReason::FailedDownloadCleanup,
+            ));
+            continue;
+        }
+
+        if file_info.is_too_small {
             if args.delete_small {
-                files_to_delete.push(file_info.original_path.clone());
+                pending_deletions.push((
+                    file_info.original_path.clone(),
+                    DeleteReason::TooSmall,
+                ));
                 // Remove this file from todo list since we're deleting it
                 todo_list.remove_file_from_todo(&file_info.original_name);
             } else {
                 todo_list.add_failed_download(file_info)?;
-                // Collect todo item for JSON output
-                let category = if file_info.is_failed_download { "failed_download" } else { "too_small" };
-                let message = if file_info.is_failed_download {
-                    format!("重新下载: {} (未完成下载)", file_info.original_name)
-                } else {
-                    format!("检查并重新下载: {} (文件过小，仅 {} 字节)", file_info.original_name, file_info.size)
-                };
-                todo_items.push((category.to_string(), file_info.original_name.clone(), message));
+                let message = format!(
+                    "检查并重新下载: {} (文件过小，仅 {} 字节)",
+                    file_info.original_name, file_info.size
+                );
+                todo_items.push((
+                    "too_small".to_string(),
+                    file_info.original_name.clone(),
+                    message,
+                ));
             }
-        } else {
-            // Analyze file integrity for all other files
-            todo_list.analyze_file_integrity(file_info)?;
+            continue;
         }
+
+        // Analyze file integrity for all other files
+        todo_list.analyze_file_integrity(file_info)?;
     }
 
     // Detect duplicates (skip if cloud storage mode)
@@ -104,10 +139,14 @@ fn main() -> Result<()> {
     if args.dry_run {
         if args.json {
             // Output JSON format
+            let delete_operations: Vec<(PathBuf, String)> = pending_deletions
+                .iter()
+                .map(|(path, reason)| (path.clone(), reason.issue_key().to_string()))
+                .collect();
             let operations = json_output::OperationsOutput::from_results(
                 clean_files,
                 duplicate_groups,
-                files_to_delete,
+                delete_operations,
                 todo_items,
                 &args.path,
             )?;
@@ -156,9 +195,28 @@ fn main() -> Result<()> {
                 }
             }
 
-            if !files_to_delete.is_empty() {
+            let (failed_cleanup, small_cleanup): (Vec<_>, Vec<_>) = pending_deletions
+                .iter()
+                .cloned()
+                .partition(|(_, reason)| matches!(reason, DeleteReason::FailedDownloadCleanup));
+
+            if !failed_cleanup.is_empty() {
+                println!("\n{}", "🧹  未完成下载将被清理:".cyan().bold());
+                for (path, _) in &failed_cleanup {
+                    println!("  {} {}", 
+                        "REMOVE:".cyan().bold(),
+                        path.display().to_string().bright_black()
+                    );
+                }
+                println!("  {} {}", 
+                    "提示:".bright_black(),
+                    "执行正式运行时会删除 .download/.crdownload 文件，todo.md 仍会保留重新下载提醒。".bright_black()
+                );
+            }
+
+            if !small_cleanup.is_empty() {
                 println!("\n{}", "🗑️  SMALL/CORRUPTED FILES TO DELETE:".red().bold());
-                for path in &files_to_delete {
+                for (path, _) in &small_cleanup {
                     println!("  {} {}", 
                         "DELETE:".red().bold(),
                         path.display().to_string().bright_black()
@@ -205,13 +263,35 @@ fn main() -> Result<()> {
             }
         }
 
-        // Delete small/corrupted files if requested
-        if args.delete_small && !files_to_delete.is_empty() {
+        let (failed_cleanup, small_cleanup): (Vec<_>, Vec<_>) = pending_deletions
+            .into_iter()
+            .partition(|(_, reason)| matches!(reason, DeleteReason::FailedDownloadCleanup));
+
+        if !failed_cleanup.is_empty() {
+            println!("\n{} {} 个未完成下载已登记并清理", 
+                "🧹".bright_white(),
+                failed_cleanup.len().to_string().cyan().bold()
+            );
+            for (path, _) in &failed_cleanup {
+                std::fs::remove_file(path)?;
+                info!("Deleted unfinished download: {}", path.display());
+                println!("  {} {}", 
+                    "Removed:".cyan().bold(),
+                    path.display().to_string().bright_black()
+                );
+            }
+            todo_list.add_housekeeping_note(format!(
+                "系统已删除 {} 个未完成下载文件，仅保留 todo 以便重新下载。",
+                failed_cleanup.len()
+            ));
+        }
+
+        if args.delete_small && !small_cleanup.is_empty() {
             println!("\n{} {} small/corrupted files...", 
                 "🗑️".bright_white(),
-                files_to_delete.len().to_string().red().bold()
+                small_cleanup.len().to_string().red().bold()
             );
-            for path in &files_to_delete {
+            for (path, _) in &small_cleanup {
                 std::fs::remove_file(path)?;
                 info!("Deleted small/corrupted file: {}", path.display());
                 println!("  {} {}", 

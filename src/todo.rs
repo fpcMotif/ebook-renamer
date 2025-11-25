@@ -22,6 +22,7 @@ pub struct TodoList {
     pub small_files: Vec<String>,
     pub corrupted_files: Vec<String>,
     pub other_issues: Vec<String>,
+    pub housekeeping_notes: Vec<String>,
 }
 
 impl TodoList {
@@ -47,6 +48,7 @@ impl TodoList {
             small_files: Vec::new(),
             corrupted_files: Vec::new(),
             other_issues: Vec::new(),
+            housekeeping_notes: Vec::new(),
         })
     }
 
@@ -140,6 +142,10 @@ impl TodoList {
         debug!("Removed {} from todo list", filename);
     }
 
+    pub fn add_housekeeping_note<S: Into<String>>(&mut self, note: S) {
+        self.housekeeping_notes.push(note.into());
+    }
+
     pub fn write(&self) -> Result<()> {
         let content = generate_todo_md(
             &self.failed_downloads,
@@ -152,6 +158,7 @@ impl TodoList {
                 && !self.corrupted_files.contains(item)
                 && !self.other_issues.contains(item)
             }),
+            &self.housekeeping_notes,
         );
 
         fs::write(&self.todo_file_path, content)?;
@@ -205,6 +212,7 @@ fn generate_todo_md<'a>(
     corrupted_files: &[String],
     other_issues: &[String],
     other_items: impl Iterator<Item = &'a String>,
+    housekeeping_notes: &[String],
 ) -> String {
     let mut md = String::new();
 
@@ -254,7 +262,15 @@ fn generate_todo_md<'a>(
         md.push('\n');
     }
 
-    if failed_downloads.is_empty() && small_files.is_empty() && corrupted_files.is_empty() && other_issues.is_empty() && !has_other_items {
+    if !housekeeping_notes.is_empty() {
+        md.push_str("## ℹ️ 自动清理记录\n\n");
+        for note in housekeeping_notes {
+            md.push_str(&format!("- {}\n", note));
+        }
+        md.push('\n');
+    }
+
+    if failed_downloads.is_empty() && small_files.is_empty() && corrupted_files.is_empty() && other_issues.is_empty() && !has_other_items && housekeeping_notes.is_empty() {
         md.push_str("✅ 所有文件已检查完毕，无需处理的问题。\n\n");
     }
 
@@ -297,6 +313,7 @@ Other text
             small_files: vec!["Small file item".to_string()],
             corrupted_files: Vec::new(),
             other_issues: Vec::new(),
+            housekeeping_notes: Vec::new(),
         };
 
         todo_list.write()?;
@@ -306,6 +323,18 @@ Other text
         assert!(content.contains("Failed download item"));
         assert!(content.contains("Small file item"));
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_housekeeping_note_written() -> Result<()> {
+        let tmp_dir = TempDir::new()?;
+        let todo_path = tmp_dir.path().join("note.md");
+        let mut todo_list = TodoList::new(&Some(todo_path.clone()), &tmp_dir.path().to_path_buf())?;
+        todo_list.add_housekeeping_note("系统已自动清理 2 个未完成下载。");
+        todo_list.write()?;
+        let content = fs::read_to_string(&todo_path)?;
+        assert!(content.contains("自动清理"));
         Ok(())
     }
 

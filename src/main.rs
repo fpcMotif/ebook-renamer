@@ -5,6 +5,7 @@ mod todo;
 mod cli;
 mod json_output;
 mod download_recovery;
+mod cleanup;
 
 use anyhow::Result;
 use clap::Parser;
@@ -12,6 +13,28 @@ use cli::Args;
 use log::info;
 use download_recovery::DownloadRecovery;
 use colored::*;
+use cleanup::CleanupPlan;
+use scanner::FileInfo;
+use std::fs;
+use std::io::Read;
+
+/// Validate PDF file integrity by checking header
+fn validate_pdf_integrity(file_info: &FileInfo) -> Result<()> {
+    if file_info.extension.to_lowercase() != ".pdf" {
+        return Ok(());
+    }
+
+    let mut file = fs::File::open(&file_info.original_path)?;
+    let mut header = [0u8; 5];
+    file.read_exact(&mut header)?;
+    
+    // PDF files should start with "%PDF-"
+    if &header != b"%PDF-" {
+        return Err(anyhow::anyhow!("Invalid PDF header"));
+    }
+    
+    Ok(())
+}
 
 fn main() -> Result<()> {
     env_logger::Builder::from_default_env()
@@ -30,7 +53,9 @@ fn main() -> Result<()> {
     }
 
     // Step 1: Recover downloads from .download/.crdownload folders
-    let recovery = DownloadRecovery::new(&args.path, args.cleanup_downloads);
+    // Enable cleanup if auto_cleanup is set
+    let enable_folder_cleanup = args.auto_cleanup || args.cleanup_downloads;
+    let recovery = DownloadRecovery::new(&args.path, enable_folder_cleanup);
     let recovery_result = recovery.recover_downloads()?;
     
     if !recovery_result.extracted_files.is_empty() {
@@ -63,34 +88,52 @@ fn main() -> Result<()> {
     let normalized = normalizer::normalize_files(files)?;
     info!("Normalized {} files", normalized.len());
 
+    // Determine cleanup behavior based on flags
+    let should_cleanup_files = args.auto_cleanup || args.delete_small;
+    let should_prompt = args.interactive && !args.yes && !args.dry_run;
+
     // Handle failed downloads and small files
     let mut todo_list = todo::TodoList::new(&args.todo_file, &args.path)?;
-    let mut files_to_delete = Vec::new();
+    let mut cleanup_plan = CleanupPlan::new();
     let mut todo_items = Vec::new();
     
     for file_info in &normalized {
-        // Add existing failed/too small files
-        if file_info.is_failed_download || file_info.is_too_small {
-            if args.delete_small {
-                files_to_delete.push(file_info.original_path.clone());
-                // Remove this file from todo list since we're deleting it
+        // Categorize problem files
+        if file_info.is_failed_download {
+            if should_cleanup_files {
+                cleanup_plan.failed_downloads.push(file_info.original_path.clone());
                 todo_list.remove_file_from_todo(&file_info.original_name);
             } else {
                 todo_list.add_failed_download(file_info)?;
-                // Collect todo item for JSON output
-                let category = if file_info.is_failed_download { "failed_download" } else { "too_small" };
-                let message = if file_info.is_failed_download {
-                    format!("重新下载: {} (未完成下载)", file_info.original_name)
-                } else {
-                    format!("检查并重新下载: {} (文件过小，仅 {} 字节)", file_info.original_name, file_info.size)
-                };
-                todo_items.push((category.to_string(), file_info.original_name.clone(), message));
+                let message = format!("重新下载: {} (未完成下载)", file_info.original_name);
+                todo_items.push(("failed_download".to_string(), file_info.original_name.clone(), message));
+            }
+        } else if file_info.is_too_small {
+            if should_cleanup_files {
+                cleanup_plan.small_files.push(file_info.original_path.clone());
+                todo_list.remove_file_from_todo(&file_info.original_name);
+            } else {
+                todo_list.add_failed_download(file_info)?;
+                let message = format!("检查并重新下载: {} (文件过小，仅 {} 字节)", file_info.original_name, file_info.size);
+                todo_items.push(("too_small".to_string(), file_info.original_name.clone(), message));
             }
         } else {
             // Analyze file integrity for all other files
-            todo_list.analyze_file_integrity(file_info)?;
+            if let Err(_) = validate_pdf_integrity(file_info) {
+                if should_cleanup_files {
+                    cleanup_plan.corrupted_files.push(file_info.original_path.clone());
+                    todo_list.remove_file_from_todo(&file_info.original_name);
+                } else {
+                    todo_list.analyze_file_integrity(file_info)?;
+                }
+            } else {
+                todo_list.analyze_file_integrity(file_info)?;
+            }
         }
     }
+
+    // Note: download folders are already cleaned by download_recovery module
+    // We don't need to add them to cleanup_plan again
 
     // Detect duplicates (skip if cloud storage mode)
     let (duplicate_groups, clean_files) = duplicates::detect_duplicates(normalized, args.skip_cloud_hash)?;
@@ -104,6 +147,12 @@ fn main() -> Result<()> {
     if args.dry_run {
         if args.json {
             // Output JSON format
+            let files_to_delete: Vec<_> = cleanup_plan.small_files.iter()
+                .chain(cleanup_plan.corrupted_files.iter())
+                .chain(cleanup_plan.failed_downloads.iter())
+                .cloned()
+                .collect();
+            
             let operations = json_output::OperationsOutput::from_results(
                 clean_files,
                 duplicate_groups,
@@ -156,14 +205,10 @@ fn main() -> Result<()> {
                 }
             }
 
-            if !files_to_delete.is_empty() {
-                println!("\n{}", "🗑️  SMALL/CORRUPTED FILES TO DELETE:".red().bold());
-                for path in &files_to_delete {
-                    println!("  {} {}", 
-                        "DELETE:".red().bold(),
-                        path.display().to_string().bright_black()
-                    );
-                }
+            // Display cleanup plan in dry-run mode
+            if !cleanup_plan.is_empty() {
+                println!("\n{}", "═══ 清理计划（DRY RUN）═══".bold().yellow());
+                cleanup_plan.display_detailed();
             }
             
             if !todo_list.items.is_empty() {
@@ -205,19 +250,42 @@ fn main() -> Result<()> {
             }
         }
 
-        // Delete small/corrupted files if requested
-        if args.delete_small && !files_to_delete.is_empty() {
-            println!("\n{} {} small/corrupted files...", 
-                "🗑️".bright_white(),
-                files_to_delete.len().to_string().red().bold()
-            );
-            for path in &files_to_delete {
-                std::fs::remove_file(path)?;
-                info!("Deleted small/corrupted file: {}", path.display());
-                println!("  {} {}", 
-                    "Deleted:".red().bold(),
-                    path.display().to_string().bright_black()
+        // Execute cleanup if needed
+        if !cleanup_plan.is_empty() {
+            // Show cleanup plan
+            if !args.json {
+                cleanup_plan.display_summary();
+            }
+
+            // Prompt for confirmation if interactive mode
+            let should_proceed = if should_prompt {
+                cleanup::prompt_confirmation(&cleanup_plan)?
+            } else {
+                true
+            };
+
+            if should_proceed {
+                if !args.json {
+                    println!("\n{} 正在清理文件...", "🧹".bright_white());
+                }
+                
+                let cleanup_result = cleanup::execute_cleanup(&cleanup_plan)?;
+                
+                if !args.json {
+                    cleanup_result.display();
+                }
+                
+                info!(
+                    "Cleanup completed: {} files deleted, {} folders removed, {} errors",
+                    cleanup_result.deleted_files,
+                    cleanup_result.deleted_folders,
+                    cleanup_result.errors.len()
                 );
+            } else {
+                if !args.json {
+                    println!("\n{} 清理操作已取消", "ℹ️".bright_blue());
+                }
+                info!("Cleanup cancelled by user");
             }
         }
 

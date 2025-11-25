@@ -25,6 +25,11 @@ class Normalizer:
     SEPARATOR_REGEX = re.compile(r'^(.+?)\s*[-:]\s+(.+)$')
     MULTI_AUTHOR_REGEX = re.compile(r'^([A-Z][^:]+?),\s*([A-Z][^:]+?)\s*[-:]\s+(.+)$')
     
+    # New Patterns
+    VERSION_REGEX = re.compile(r'(?i)\b(v|ver|version)\.?\s*\d+(\.\d+)*\b')
+    PAGE_COUNT_REGEX = re.compile(r'(?i)\b\d+\s*(?:pages?|pp?\.?|P)\b')
+    LANG_TAG_REGEX = re.compile(r'(?i)(\((?:English|Chinese|Japanese|中文|日本語)\)|(?:English|Chinese|Japanese) Edition)')
+    
     def normalize_files(self, files: List[FileInfo]) -> List[FileInfo]:
         """Normalize filenames according to the specification."""
         result = []
@@ -60,6 +65,7 @@ class Normalizer:
         base = self._remove_series_prefixes(base)
         
         # Step 3: Clean noise sources
+        # MUST happen BEFORE author parsing
         base = self._clean_noise_sources(base)
         
         # Step 4: Remove ALL bracketed annotations
@@ -101,6 +107,10 @@ class Normalizer:
 
     def _clean_noise_sources(self, s: str) -> str:
         patterns = [
+            # Improved patterns
+            r'\s+libgen\.li(?:\.pdf)?\b',
+            r'\s*[-\(]?\s*[zZ]-?Library(?:\.pdf)?\b',
+            
             r'\s*[-\(]?\s*[zZ]-?Library(?:\.pdf)?\s*[)\.]?',
             r'\s*[-\(]?\s*libgen(?:\.li)?(?:\.pdf)?\s*[)\.]?',
             r'\s*[-\(]?\s*Anna\'?s?\s+Archive(?:\.pdf)?\s*[)\.]?',
@@ -111,8 +121,13 @@ class Normalizer:
             r'\s*--\s*[a-f0-9]{8,}\s*(?:--)?',
         ]
         result = s
-        for pattern in patterns:
-            result = re.sub(pattern, "", result)
+        # Apply patterns multiple times
+        for _ in range(3):
+            before = result
+            for pattern in patterns:
+                result = re.sub(pattern, "", result)
+            if result == before:
+                break
         return result.strip()
 
     def _extract_year(self, s: str) -> Optional[int]:
@@ -232,24 +247,71 @@ class Normalizer:
         s = s.strip()
         s = self._clean_noise_sources(s)
         s = self.AUTH_REGEX.sub("", s)
+        s = self._clean_patterns(s)
         s = self.TRAILING_ID_REGEX.sub("", s)
         s = self._clean_orphaned_brackets(s)
         s = self.SPACE_REGEX.sub(" ", s)
         s = s.strip("-:;,.")
         return s.strip()
+        
+    def _clean_patterns(self, s: str) -> str:
+        s = self.VERSION_REGEX.sub("", s)
+        s = self.PAGE_COUNT_REGEX.sub("", s)
+        s = self.LANG_TAG_REGEX.sub("", s)
+        return s
 
     def _is_publisher_or_series_info(self, s: str) -> bool:
         publisher_keywords = [
+            # Original
             "Press", "Publishing", "Academic Press", "Springer", "Cambridge", "Oxford", "MIT Press",
             "Series", "Textbook Series", "Graduate Texts", "Graduate Studies", "Lecture Notes",
             "Pure and Applied", "Mathematics", "Foundations of", "Monographs", "Studies", "Collection",
             "Textbook", "Edition", "Vol.", "Volume", "No.", "Part", "理工", "出版社", "の",
+            "Z-Library", "libgen", "Anna's Archive",
+            
+            # New Publishers
+            "Wiley", "Pearson", "McGraw-Hill", "Elsevier", "Taylor & Francis",
+            
+            # General Genres
+            "Fiction", "Novel", "Handbook", "Manual", "Guide", "Reference",
+            "Cookbook", "Workbook", "Encyclopedia", "Dictionary", "Atlas", "Anthology",
+            "Biography", "Memoir", "Essay", "Poetry", "Drama", "Short Stories",
+            
+            # Academic Genres
+            "Thesis", "Dissertation", "Proceedings", "Conference", "Symposium", "Workshop",
+            "Report", "Technical Report", "White Paper", "Preprint", "Manuscript",
+            "Lecture", "Course Notes", "Study Guide", "Solutions Manual",
+            
+            # Version Keywords
+            "Revised Edition", "Updated Edition", "Expanded Edition",
+            "Abridged", "Unabridged", "Complete Edition", "Anniversary Edition",
+            "Collector's Edition", "Special Edition", "1st ed", "2nd ed", "3rd ed",
+            
+            # Format/Quality
+            "OCR", "Scanned", "Retail", "Searchable", "Bookmarked", "Optimized",
+            "Compressed", "High Quality", "HQ", "DRM-free", "No DRM", "Cracked",
+            "Kindle Edition", "PDF version", "EPUB version", "MOBI version",
+            
+            # Chinese
+            "小说", "教材", "教程", "手册", "指南", "参考书", "文集", "论文集",
+            "丛书", "系列", "修订版", "第二版", "第三版", "增订版",
+            
+            # Japanese
+            "小説", "教科書", "テキスト", "ハンドブック", "マニュアル", "ガイド",
+            "講義", "シリーズ", "改訂版", "第2版", "第3版",
         ]
         
+        s_lower = s.lower()
         for k in publisher_keywords:
-            if k in s:
+            if k.lower() in s_lower:
                 return True
                 
+        # Detect hash patterns
+        if re.search(r'[a-f0-9]{8,}', s) and len(s) > 8:
+            return True
+        if re.search(r'[A-Za-z0-9]{16,}', s) and len(s) > 16:
+            return True
+            
         # Check for series info (mostly non-letters with numbers)
         has_numbers = any(c.isdigit() for c in s)
         non_letter_count = sum(1 for c in s if not c.isalpha() and c != ' ')
@@ -289,7 +351,7 @@ class Normalizer:
             result_str = result_str[:-1]
             
         return result_str
-
+    
     def _generate_new_filename(self, metadata: ParsedMetadata, extension: str) -> str:
         parts = []
         if metadata.authors:

@@ -85,15 +85,28 @@ fn main() -> Result<()> {
                     format!("检查并重新下载: {} (文件过小，仅 {} 字节)", file_info.original_name, file_info.size)
                 };
                 todo_items.push((category.to_string(), file_info.original_name.clone(), message));
+
+                // If clean_failed is set, also delete the file (but keep in todo list)
+                if args.clean_failed {
+                    files_to_delete.push(file_info.original_path.clone());
+                }
             }
         } else {
             // Analyze file integrity for all other files
-            todo_list.analyze_file_integrity(file_info)?;
+            let is_corrupted = todo_list.analyze_file_integrity(file_info)?;
+            if is_corrupted && args.clean_failed {
+                files_to_delete.push(file_info.original_path.clone());
+            }
         }
     }
 
+    // Filter out files scheduled for deletion from further processing
+    let files_to_process: Vec<_> = normalized.into_iter()
+        .filter(|f| !files_to_delete.contains(&f.original_path))
+        .collect();
+
     // Detect duplicates (skip if cloud storage mode)
-    let (duplicate_groups, clean_files) = duplicates::detect_duplicates(normalized, args.skip_cloud_hash)?;
+    let (duplicate_groups, clean_files) = duplicates::detect_duplicates(files_to_process, args.skip_cloud_hash)?;
     if args.skip_cloud_hash {
         info!("Skipped duplicate detection (cloud storage mode)");
     } else {
@@ -157,7 +170,12 @@ fn main() -> Result<()> {
             }
 
             if !files_to_delete.is_empty() {
-                println!("\n{}", "🗑️  SMALL/CORRUPTED FILES TO DELETE:".red().bold());
+                let header = if args.clean_failed && !args.delete_small {
+                    "🗑️  FAILED/CORRUPTED FILES TO CLEANUP (Logged in todo.md):"
+                } else {
+                    "🗑️  SMALL/CORRUPTED FILES TO DELETE:"
+                };
+                println!("\n{}", header.red().bold());
                 for path in &files_to_delete {
                     println!("  {} {}", 
                         "DELETE:".red().bold(),
@@ -206,18 +224,20 @@ fn main() -> Result<()> {
         }
 
         // Delete small/corrupted files if requested
-        if args.delete_small && !files_to_delete.is_empty() {
+        if (args.delete_small || args.clean_failed) && !files_to_delete.is_empty() {
             println!("\n{} {} small/corrupted files...", 
                 "🗑️".bright_white(),
                 files_to_delete.len().to_string().red().bold()
             );
             for path in &files_to_delete {
-                std::fs::remove_file(path)?;
-                info!("Deleted small/corrupted file: {}", path.display());
-                println!("  {} {}", 
-                    "Deleted:".red().bold(),
-                    path.display().to_string().bright_black()
-                );
+                if path.exists() {
+                    std::fs::remove_file(path)?;
+                    info!("Deleted small/corrupted file: {}", path.display());
+                    println!("  {} {}", 
+                        "Deleted:".red().bold(),
+                        path.display().to_string().bright_black()
+                    );
+                }
             }
         }
 

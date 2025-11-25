@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use log::debug;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -84,7 +84,8 @@ impl Scanner {
                 .unwrap_or_default()
         };
 
-        let is_failed_download = original_name.ends_with(".download") || original_name.ends_with(".crdownload");
+        let is_failed_download =
+            original_name.ends_with(".download") || original_name.ends_with(".crdownload");
         // Only check size for PDF and EPUB files (txt files can be small)
         let is_ebook = extension == ".pdf" || extension == ".epub";
         let is_too_small = !is_failed_download && is_ebook && size < 1024; // Less than 1KB
@@ -110,7 +111,9 @@ impl Scanner {
             }
 
             // Skip download folders only (not files) - they're handled by download_recovery module
-            if path.is_dir() && (filename.ends_with(".download") || filename.ends_with(".crdownload")) {
+            if path.is_dir()
+                && (filename.ends_with(".download") || filename.ends_with(".crdownload"))
+            {
                 return true;
             }
 
@@ -185,4 +188,3 @@ mod tests {
         assert!(file_info.is_too_small);
     }
 }
-

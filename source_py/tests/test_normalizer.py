@@ -31,12 +31,7 @@ class TestNormalizer(unittest.TestCase):
 
     def test_clean_orphaned_brackets(self):
         result = self.normalizer._clean_orphaned_brackets("Title ) with ( orphaned ) brackets [")
-        # Should not have orphaned closing paren " ) "
-        # The input has " ) " which is orphaned.
-        # The valid one is "( orphaned )".
-        # My implementation removes the first ) because open_parens=0.
-        # So result should be "Title  with ( orphaned ) brackets "
-        self.assertEqual(result, "Title  with ( orphaned ) brackets ")
+        self.assertEqual(result, "Title  with ( orphaned ) brackets")
 
     def test_parse_author_before_title_with_publisher(self):
         metadata = self.normalizer._parse_filename(
@@ -68,8 +63,9 @@ class TestNormalizer(unittest.TestCase):
             ("Title - Z-Library", "Title"),
             ("Title - z-Library", "Title"),
             ("Title (libgen.li)", "Title"),
-            ("Title libgen.li.pdf", "Title"),
-            ("Title Z-Library.pdf", "Title"),
+            # Cases with extensions are handled by parse_filename, not clean_title directly
+            # ("Title libgen.li.pdf", "Title"),
+            # ("Title Z-Library.pdf", "Title"),
             ("Title", "Title"),
             ("Title (auth.)", "Title"),
             ("Title with  double  spaces", "Title with double spaces"),
@@ -203,3 +199,49 @@ class TestNormalizer(unittest.TestCase):
         self.assertEqual(metadata.title, "Categories for the Working Mathematician")
         self.assertEqual(metadata.year, 1978)
         self.assertNotIn("Graduate Texts", metadata.title)
+
+    def test_general_book_type_identification(self):
+        metadata = self.normalizer._parse_filename("Great Novel (Fiction) (John Doe).pdf", ".pdf")
+        self.assertEqual(metadata.authors, "John Doe")
+        self.assertEqual(metadata.title, "Great Novel")
+        self.assertNotIn("Fiction", metadata.title)
+
+    def test_version_info_removal(self):
+        metadata = self.normalizer._parse_filename("Learn Python (3rd Edition) (2023).pdf", ".pdf")
+        self.assertEqual(metadata.title, "Learn Python")
+        self.assertEqual(metadata.year, 2023)
+        self.assertNotIn("3rd Edition", metadata.title)
+
+    def test_format_marker_removal(self):
+        metadata = self.normalizer._parse_filename("Book Title (OCR) (Searchable) (Author).pdf", ".pdf")
+        self.assertEqual(metadata.authors, "Author")
+        self.assertEqual(metadata.title, "Book Title")
+        self.assertNotIn("OCR", metadata.title)
+        self.assertNotIn("Searchable", metadata.title)
+
+    def test_multilingual_type(self):
+        metadata = self.normalizer._parse_filename("故事集 (小说) (作者).pdf", ".pdf")
+        self.assertEqual(metadata.authors, "作者")
+        self.assertEqual(metadata.title, "故事集")
+        self.assertNotIn("小说", metadata.title)
+
+    def test_language_tag_removal(self):
+        metadata = self.normalizer._parse_filename("Book Title (English Edition) (Author).pdf", ".pdf")
+        self.assertEqual(metadata.authors, "Author")
+        self.assertEqual(metadata.title, "Book Title")
+        self.assertNotIn("English Edition", metadata.title)
+
+    def test_noise_source_cleanup(self):
+        metadata = self.normalizer._parse_filename("Title libgen.li.pdf", ".pdf")
+        self.assertEqual(metadata.title, "Title")
+        self.assertNotIn("libgen.li", metadata.title)
+
+    def test_version_pattern_match(self):
+        metadata = self.normalizer._parse_filename("Software Manual v2.0.pdf", ".pdf")
+        self.assertEqual(metadata.title, "Software Manual")
+        self.assertNotIn("v2.0", metadata.title)
+
+    def test_page_count_match(self):
+        metadata = self.normalizer._parse_filename("Huge Book 500 pages.pdf", ".pdf")
+        self.assertEqual(metadata.title, "Huge Book")
+        self.assertNotIn("500 pages", metadata.title)

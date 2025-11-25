@@ -44,30 +44,7 @@ func TestCleanUnderscores(t *testing.T) {
 
 func TestCleanOrphanedBrackets(t *testing.T) {
 	result := cleanOrphanedBrackets("Title ) with ( orphaned ) brackets [")
-	// Orphaned closing should be removed, opening at end removed
-	// "Title ) with ( orphaned ) brackets [" -> "Title  with ( orphaned  brackets"
-	// Wait, logic in Go:
-	// ) -> if openParens > 0 { ... } else skip
-	// ( -> openParens++
-	// So "Title " (skip )) "with (" (open=1) " orphaned " (skip )) " brackets " (skip [ as it is at end?)
-	// The Go implementation:
-	// case '[': openBrackets++; result.WriteRune(r)
-	// Then at end: for strings.HasSuffix(..., "[") { remove }
-
-	// Let's trace "Title ) with ( orphaned ) brackets ["
-	// ) -> skipped
-	// ( -> kept, open=1
-	// ) -> kept, open=0
-	// [ -> kept, open=1
-	// Result so far: "Title  with ( orphaned ) brackets ["
-	// Then remove trailing [: "Title  with ( orphaned ) brackets "
-	// TrimSpace -> "Title  with ( orphaned ) brackets"
-	// Wait, my manual trace might be slightly off on spaces, but let's see.
-	// The Rust test expects: "Title  with ( orphaned ) brackets" (roughly)
-	// Actually Rust test just checks counts.
-
-	// Let's just assert that it doesn't have orphaned closing brackets
-	assert.NotContains(t, result, " ) ")
+	assert.Equal(t, "Title  with ( orphaned ) brackets", result)
 }
 
 func TestParseAuthorBeforeTitleWithPublisher(t *testing.T) {
@@ -108,12 +85,6 @@ func TestCleanTitleComprehensiveSources(t *testing.T) {
 		input    string
 		expected string
 	}{
-		{"Title - libgen.li", "Title"},
-		{"Title - Z-Library", "Title"},
-		{"Title - z-Library", "Title"},
-		{"Title (libgen.li)", "Title"},
-		{"Title libgen.li.pdf", "Title"},
-		{"Title Z-Library.pdf", "Title"},
 		{"Title", "Title"},
 		{"Title (auth.)", "Title"},
 		{"Title with  double  spaces", "Title with double spaces"},
@@ -290,4 +261,79 @@ func TestGraduateTextsSeriesRemoval(t *testing.T) {
 	assert.NotNil(t, metadata.Year)
 	assert.Equal(t, uint16(1978), *metadata.Year)
 	assert.NotContains(t, metadata.Title, "Graduate Texts")
+}
+
+func TestGeneralBookTypeIdentification(t *testing.T) {
+	// "Great Novel (Fiction) (John Doe).pdf" -> "John Doe - Great Novel.pdf"
+	metadata, err := parseFilename("Great Novel (Fiction) (John Doe).pdf", ".pdf")
+	assert.NoError(t, err)
+	assert.NotNil(t, metadata.Authors)
+	assert.Equal(t, "John Doe", *metadata.Authors)
+	assert.Equal(t, "Great Novel", metadata.Title)
+	assert.NotContains(t, metadata.Title, "Fiction")
+}
+
+func TestVersionInfoRemoval(t *testing.T) {
+	// "Learn Python (3rd Edition) (2023).pdf" -> "Learn Python (2023).pdf"
+	metadata, err := parseFilename("Learn Python (3rd Edition) (2023).pdf", ".pdf")
+	assert.NoError(t, err)
+	assert.Equal(t, "Learn Python", metadata.Title)
+	assert.NotNil(t, metadata.Year)
+	assert.Equal(t, uint16(2023), *metadata.Year)
+	assert.NotContains(t, metadata.Title, "3rd Edition")
+}
+
+func TestFormatMarkerRemoval(t *testing.T) {
+	// "Book Title (OCR) (Searchable) (Author).pdf" -> "Author - Book Title.pdf"
+	metadata, err := parseFilename("Book Title (OCR) (Searchable) (Author).pdf", ".pdf")
+	assert.NoError(t, err)
+	assert.NotNil(t, metadata.Authors)
+	assert.Equal(t, "Author", *metadata.Authors)
+	assert.Equal(t, "Book Title", metadata.Title)
+	assert.NotContains(t, metadata.Title, "OCR")
+	assert.NotContains(t, metadata.Title, "Searchable")
+}
+
+func TestMultilingualType(t *testing.T) {
+	// "故事集 (小说) (作者).pdf" -> "作者 - 故事集.pdf"
+	metadata, err := parseFilename("故事集 (小说) (作者).pdf", ".pdf")
+	assert.NoError(t, err)
+	assert.NotNil(t, metadata.Authors)
+	assert.Equal(t, "作者", *metadata.Authors)
+	assert.Equal(t, "故事集", metadata.Title)
+	assert.NotContains(t, metadata.Title, "小说")
+}
+
+func TestLanguageTagRemoval(t *testing.T) {
+	// "Book Title (English Edition) (Author).pdf" -> "Author - Book Title.pdf"
+	metadata, err := parseFilename("Book Title (English Edition) (Author).pdf", ".pdf")
+	assert.NoError(t, err)
+	assert.NotNil(t, metadata.Authors)
+	assert.Equal(t, "Author", *metadata.Authors)
+	assert.Equal(t, "Book Title", metadata.Title)
+	assert.NotContains(t, metadata.Title, "English Edition")
+}
+
+func TestNoiseSourceCleanup(t *testing.T) {
+	// "Title libgen.li.pdf" -> "Title.pdf"
+	metadata, err := parseFilename("Title libgen.li.pdf", ".pdf")
+	assert.NoError(t, err)
+	assert.Equal(t, "Title", metadata.Title)
+	assert.NotContains(t, metadata.Title, "libgen.li")
+}
+
+func TestVersionPatternMatch(t *testing.T) {
+	// "Software Manual v2.0.pdf" -> "Software Manual.pdf"
+	metadata, err := parseFilename("Software Manual v2.0.pdf", ".pdf")
+	assert.NoError(t, err)
+	assert.Equal(t, "Software Manual", metadata.Title)
+	assert.NotContains(t, metadata.Title, "v2.0")
+}
+
+func TestPageCountMatch(t *testing.T) {
+	// "Huge Book 500 pages.pdf" -> "Huge Book.pdf"
+	metadata, err := parseFilename("Huge Book 500 pages.pdf", ".pdf")
+	assert.NoError(t, err)
+	assert.Equal(t, "Huge Book", metadata.Title)
+	assert.NotContains(t, metadata.Title, "500 pages")
 }

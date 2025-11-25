@@ -30,6 +30,12 @@ var (
 	// Cleaning patterns
 	authNoiseRegex    = regexp.MustCompile(`\s*\((?:[Aa]uth\.?|[Aa]uthor|[Ee]ds?\.?|[Tt]ranslator)\)`)
 	trailingAuthRegex = regexp.MustCompile(`\s*\([Aa]uth\.?\)`)
+	emptyParenRegex   = regexp.MustCompile(`\(\s*\)`)
+
+	// New Pattern Regexes
+	versionRegex     = regexp.MustCompile(`(?i)\b(v|ver|version)\.?\s*\d+(\.\d+)*\b`)
+	pagesRegex       = regexp.MustCompile(`(?i)\b\d+\s*(?:pages?|pp?\.?|p)\b`)
+	langEditionRegex = regexp.MustCompile(`(?i)\b(English|Chinese|Japanese)\s+Edition\b`)
 )
 
 // NormalizeFiles normalizes filenames according to the specification
@@ -49,14 +55,6 @@ func NormalizeFiles(files []*types.FileInfo) ([]*types.FileInfo, error) {
 		}
 
 		newName := generateNewFilename(metadata, file.Extension)
-
-		// Update file info
-		// We need to create a copy or modify the pointer if it's mutable.
-		// Since we are returning a new slice of pointers, we can just modify the struct if we own it,
-		// or create a new one. FileInfo is a struct pointer in the input slice?
-		// The input is []*types.FileInfo.
-		// Let's modify it in place or create a copy.
-		// Rust implementation modifies in place.
 
 		file.NewName = &newName
 		file.NewPath = filepathJoin(filepath.Dir(file.OriginalPath), newName)
@@ -127,6 +125,10 @@ func removeSeriesPrefixes(s string) string {
 
 func cleanNoiseSources(s string) string {
 	patterns := []string{
+		// Precise matches (Improved)
+		`\s+libgen\.li$`,             // Ends with libgen.li (after extension strip)
+		`\s*[-\(]?\s*[zZ]-?Library$`, // Ends with Z-Library
+
 		// Z-Library variants
 		`\s*[-\(]?\s*[zZ]-?Library\s*[)\.]?`,
 		`\s*\([zZ]-?Library\)`,
@@ -359,6 +361,13 @@ func cleanAuthorName(s string) string {
 	return strings.TrimSpace(s)
 }
 
+func removeCommonPatterns(s string) string {
+	s = versionRegex.ReplaceAllString(s, "")
+	s = pagesRegex.ReplaceAllString(s, "")
+	s = langEditionRegex.ReplaceAllString(s, "")
+	return s
+}
+
 func cleanTitle(s string) string {
 	s = strings.TrimSpace(s)
 
@@ -368,8 +377,14 @@ func cleanTitle(s string) string {
 	// Strip trailing ID-like noise
 	s = trailingIDRegex.ReplaceAllString(s, "")
 
+	// Remove common patterns
+	s = removeCommonPatterns(s)
+
 	// Clean orphaned brackets
 	s = cleanOrphanedBrackets(s)
+
+	// Remove empty parens
+	s = emptyParenRegex.ReplaceAllString(s, "")
 
 	s = spaceRegex.ReplaceAllString(s, " ")
 	s = strings.TrimRight(s, "-:;,.")
@@ -379,18 +394,56 @@ func cleanTitle(s string) string {
 }
 
 func isPublisherOrSeriesInfo(s string) bool {
+	// Case insensitive check
+	lowerS := strings.ToLower(s)
+
 	publisherKeywords := []string{
-		"Press", "Publishing", "Academic Press", "Springer", "Cambridge", "Oxford", "MIT Press",
-		"Series", "Textbook Series", "Graduate Texts", "Graduate Studies", "Lecture Notes",
-		"Pure and Applied", "Mathematics", "Foundations of", "Monographs", "Studies", "Collection",
-		"Textbook", "Edition", "Vol.", "Volume", "No.", "Part", "理工", "出版社", "の",
-		"Z-Library", "libgen", "Anna's Archive",
+		// Publishers
+		"press", "publishing", "academic press", "springer", "cambridge", "oxford", "mit press",
+		"wiley", "pearson", "mcgraw-hill", "elsevier", "taylor & francis",
+		// General Types
+		"fiction", "novel", "handbook", "manual", "guide", "reference",
+		"cookbook", "workbook", "encyclopedia", "dictionary", "atlas", "anthology",
+		"biography", "memoir", "essay", "poetry", "drama", "short stories",
+		// Academic Types
+		"thesis", "dissertation", "proceedings", "conference", "symposium", "workshop",
+		"report", "technical report", "white paper", "preprint", "manuscript",
+		"lecture", "course notes", "study guide", "solutions manual",
+		// Series/Editions
+		"series", "textbook series", "graduate texts", "graduate studies", "lecture notes",
+		"pure and applied", "mathematics", "foundations of", "monographs", "studies", "collection",
+		"textbook", "edition", "vol.", "volume", "no.", "part",
+		"revised edition", "updated edition", "expanded edition",
+		"abridged", "unabridged", "complete edition", "anniversary edition",
+		"collector's edition", "special edition", "1st ed", "2nd ed", "3rd ed",
+		// Format/Quality
+		"ocr", "scanned", "retail", "searchable", "bookmarked", "optimized",
+		"compressed", "high quality", "hq", "drm-free", "no drm", "cracked",
+		"kindle edition", "pdf version", "epub version", "mobi version",
+		// Chinese
+		"理工", "出版社", "小说", "教材", "教程", "手册", "指南", "参考书", "文集", "论文集",
+		"丛书", "系列", "修订版", "第二版", "第三版", "增订版",
+		// Japanese
+		"の", "小説", "教科書", "テキスト", "ハンドブック", "マニュアル", "ガイド",
+		"講義", "シリーズ", "改訂版", "第2版", "第3版",
+		// Noise
+		"z-library", "libgen", "anna's archive",
+		// Languages
+		"english", "chinese", "japanese",
 	}
 
 	for _, k := range publisherKeywords {
-		if strings.Contains(s, k) {
+		if strings.Contains(lowerS, k) {
 			return true
 		}
+	}
+
+	// Check regex patterns
+	if versionRegex.MatchString(s) {
+		return true
+	}
+	if pagesRegex.MatchString(s) {
+		return true
 	}
 
 	// Detect hash patterns

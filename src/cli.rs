@@ -135,3 +135,86 @@ impl Args {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_extensions() {
+        let args = Args {
+            path: PathBuf::from("."),
+            dry_run: false,
+            max_depth: 0,
+            no_recursive: false,
+            extensions: None,
+            no_delete: false,
+            todo_file: None,
+            log_file: None,
+            preserve_unicode: false,
+            fetch_arxiv: false,
+            verbose: false,
+            delete_small: false,
+            json: false,
+            skip_cloud_hash: false,
+            cleanup_downloads: false,
+        };
+
+        let exts = args.get_extensions();
+        assert_eq!(exts.len(), 3);
+        assert!(exts.contains(&".pdf".to_string()));
+        assert!(exts.contains(&".epub".to_string()));
+        assert!(exts.contains(&".txt".to_string()));
+    }
+
+    #[test]
+    fn test_custom_extensions() {
+        let args = Args {
+            path: PathBuf::from("."),
+            dry_run: false,
+            max_depth: 0,
+            no_recursive: false,
+            extensions: Some("mobi, azw3".to_string()),
+            no_delete: false,
+            todo_file: None,
+            log_file: None,
+            preserve_unicode: false,
+            fetch_arxiv: false,
+            verbose: false,
+            delete_small: false,
+            json: false,
+            skip_cloud_hash: false,
+            cleanup_downloads: false,
+        };
+
+        let exts = args.get_extensions();
+        assert_eq!(exts.len(), 2);
+        assert!(exts.contains(&".mobi".to_string()));
+        assert!(exts.contains(&".azw3".to_string()));
+    }
+
+    #[test]
+    fn test_custom_extensions_with_dots() {
+        let args = Args {
+            path: PathBuf::from("."),
+            dry_run: false,
+            max_depth: 0,
+            no_recursive: false,
+            extensions: Some(".mobi, .azw3".to_string()),
+            no_delete: false,
+            todo_file: None,
+            log_file: None,
+            preserve_unicode: false,
+            fetch_arxiv: false,
+            verbose: false,
+            delete_small: false,
+            json: false,
+            skip_cloud_hash: false,
+            cleanup_downloads: false,
+        };
+
+        let exts = args.get_extensions();
+        assert_eq!(exts.len(), 2);
+        assert!(exts.contains(&".mobi".to_string()));
+        assert!(exts.contains(&".azw3".to_string()));
+    }
+}

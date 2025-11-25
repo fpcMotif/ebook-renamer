@@ -143,3 +143,127 @@ impl OperationsOutput {
         Ok(serde_json::to_string_pretty(self)?)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+    use std::time::SystemTime;
+
+    #[test]
+    fn test_operations_output_json_serialization() {
+        let output = OperationsOutput {
+            renames: vec![RenameOperation {
+                from: "old.pdf".to_string(),
+                to: "new.pdf".to_string(),
+                reason: "test".to_string(),
+            }],
+            duplicate_deletes: vec![DuplicateGroup {
+                keep: "keep.pdf".to_string(),
+                delete: vec!["delete.pdf".to_string()],
+            }],
+            small_or_corrupted_deletes: vec![DeleteOperation {
+                path: "small.pdf".to_string(),
+                issue: "small".to_string(),
+            }],
+            todo_items: vec![TodoItem {
+                category: "Category".to_string(),
+                file: "file.pdf".to_string(),
+                message: "message".to_string(),
+            }],
+        };
+
+        let json = output.to_json().unwrap();
+        assert!(json.contains("\"from\": \"old.pdf\""));
+        assert!(json.contains("\"to\": \"new.pdf\""));
+        assert!(json.contains("\"keep\": \"keep.pdf\""));
+        // Check for delete.pdf presence without relying on exact whitespace formatting
+        assert!(json.contains("\"delete\": ["));
+        assert!(json.contains("\"delete.pdf\""));
+        assert!(json.contains("\"path\": \"small.pdf\""));
+        assert!(json.contains("\"category\": \"Category\""));
+    }
+
+    #[test]
+    fn test_from_results() {
+        let target_dir = PathBuf::from("/tmp");
+
+        // Setup Files
+        let file_info = FileInfo {
+            original_path: target_dir.join("original.pdf"),
+            original_name: "original.pdf".to_string(),
+            extension: ".pdf".to_string(),
+            size: 100,
+            modified_time: SystemTime::now(),
+            is_failed_download: false,
+            is_too_small: false,
+            new_name: Some("renamed.pdf".to_string()),
+            new_path: target_dir.join("renamed.pdf"),
+        };
+
+        let duplicate_group = vec![
+            target_dir.join("keep.pdf"),
+            target_dir.join("delete.pdf"),
+        ];
+
+        let files_to_delete = vec![target_dir.join("small.pdf")];
+
+        let todo_items = vec![
+            ("Category".to_string(), "todo.pdf".to_string(), "Check me".to_string())
+        ];
+
+        let output = OperationsOutput::from_results(
+            vec![file_info],
+            vec![duplicate_group],
+            files_to_delete,
+            todo_items,
+            &target_dir,
+        ).unwrap();
+
+        assert_eq!(output.renames.len(), 1);
+        assert_eq!(output.renames[0].from, "original.pdf");
+        assert_eq!(output.renames[0].to, "renamed.pdf");
+
+        assert_eq!(output.duplicate_deletes.len(), 1);
+        assert_eq!(output.duplicate_deletes[0].keep, "keep.pdf");
+        assert_eq!(output.duplicate_deletes[0].delete[0], "delete.pdf");
+
+        assert_eq!(output.small_or_corrupted_deletes.len(), 1);
+        assert_eq!(output.small_or_corrupted_deletes[0].path, "small.pdf");
+
+        assert_eq!(output.todo_items.len(), 1);
+        assert_eq!(output.todo_items[0].file, "todo.pdf");
+    }
+
+    #[test]
+    fn test_relative_paths() {
+        let target_dir = PathBuf::from("/base/dir");
+
+        // File path is deeper than target dir
+        let file_path = target_dir.join("subdir").join("file.pdf");
+
+        let file_info = FileInfo {
+            original_path: file_path.clone(),
+            original_name: "file.pdf".to_string(),
+            extension: ".pdf".to_string(),
+            size: 100,
+            modified_time: SystemTime::now(),
+            is_failed_download: false,
+            is_too_small: false,
+            new_name: Some("new.pdf".to_string()),
+            new_path: target_dir.join("subdir").join("new.pdf"),
+        };
+
+        let output = OperationsOutput::from_results(
+            vec![file_info],
+            vec![],
+            vec![],
+            vec![],
+            &target_dir,
+        ).unwrap();
+
+        // Paths should be relative to target_dir
+        #[cfg(not(windows))]
+        assert_eq!(output.renames[0].from, "subdir/file.pdf");
+    }
+}

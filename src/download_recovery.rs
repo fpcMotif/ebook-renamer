@@ -216,4 +216,47 @@ mod tests {
         
         Ok(())
     }
+
+    #[test]
+    fn test_recover_downloads_no_auto_cleanup() -> Result<()> {
+        let tmp_dir = TempDir::new()?;
+
+        // Create a .download folder with a PDF inside
+        let download_folder = tmp_dir.path().join("test.pdf.download");
+        fs::create_dir(&download_folder)?;
+
+        let pdf_inside = download_folder.join("Test Book (Z-Library).pdf");
+        fs::write(&pdf_inside, "dummy pdf content")?;
+
+        let recovery = DownloadRecovery::new(tmp_dir.path(), false); // auto_cleanup = false
+        let result = recovery.recover_downloads()?;
+
+        assert_eq!(result.extracted_files.len(), 1);
+        assert!(result.cleaned_folders.is_empty());
+
+        // Verify folder still exists
+        assert!(download_folder.exists());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_recover_downloads_with_crdownload() -> Result<()> {
+        let tmp_dir = TempDir::new()?;
+
+        // Create a .crdownload folder with a PDF inside
+        let download_folder = tmp_dir.path().join("test.pdf.crdownload");
+        fs::create_dir(&download_folder)?;
+
+        let pdf_inside = download_folder.join("Test Book.pdf");
+        fs::write(&pdf_inside, "dummy pdf content")?;
+
+        let recovery = DownloadRecovery::new(tmp_dir.path(), true);
+        let result = recovery.recover_downloads()?;
+
+        assert_eq!(result.extracted_files.len(), 1);
+        assert_eq!(result.cleaned_folders.len(), 1);
+
+        Ok(())
+    }
 }

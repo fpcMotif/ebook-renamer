@@ -186,6 +186,7 @@ fn compute_md5(path: &std::path::Path) -> Result<String> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+    use std::time::Duration;
 
     #[test]
     fn test_detect_duplicates_by_hash() -> Result<()> {
@@ -246,5 +247,181 @@ mod tests {
             "No Variant.pdf"
         );
     }
-}
 
+    #[test]
+    fn test_select_file_to_keep_normalized() {
+        let tmp_dir = TempDir::new().unwrap();
+        let now = std::time::SystemTime::now();
+
+        // File 1: Not normalized
+        let f1 = FileInfo {
+            original_path: tmp_dir.path().join("original.pdf"),
+            original_name: "original.pdf".to_string(),
+            extension: ".pdf".to_string(),
+            size: 100,
+            modified_time: now,
+            is_failed_download: false,
+            is_too_small: false,
+            new_name: None,
+            new_path: tmp_dir.path().join("original.pdf"),
+        };
+
+        // File 2: Normalized
+        let f2 = FileInfo {
+            original_path: tmp_dir.path().join("normalized.pdf"),
+            original_name: "normalized.pdf".to_string(),
+            extension: ".pdf".to_string(),
+            size: 100,
+            modified_time: now,
+            is_failed_download: false,
+            is_too_small: false,
+            new_name: Some("Normalized Title.pdf".to_string()),
+            new_path: tmp_dir.path().join("Normalized Title.pdf"),
+        };
+
+        let files = vec![f1, f2];
+        let kept = select_file_to_keep(&files);
+
+        // Should keep f2 because it's normalized
+        assert!(kept.new_name.is_some());
+        assert_eq!(kept.original_name, "normalized.pdf");
+    }
+
+    #[test]
+    fn test_select_file_to_keep_shortest_path() {
+        let tmp_dir = TempDir::new().unwrap();
+        let now = std::time::SystemTime::now();
+
+        // File 1: Deep path
+        let f1 = FileInfo {
+            original_path: tmp_dir.path().join("a").join("b").join("deep.pdf"),
+            original_name: "deep.pdf".to_string(),
+            extension: ".pdf".to_string(),
+            size: 100,
+            modified_time: now,
+            is_failed_download: false,
+            is_too_small: false,
+            new_name: None,
+            new_path: tmp_dir.path().join("a").join("b").join("deep.pdf"),
+        };
+
+        // File 2: Shallow path
+        let f2 = FileInfo {
+            original_path: tmp_dir.path().join("shallow.pdf"),
+            original_name: "shallow.pdf".to_string(),
+            extension: ".pdf".to_string(),
+            size: 100,
+            modified_time: now,
+            is_failed_download: false,
+            is_too_small: false,
+            new_name: None,
+            new_path: tmp_dir.path().join("shallow.pdf"),
+        };
+
+        let files = vec![f1, f2];
+        let kept = select_file_to_keep(&files);
+
+        // Should keep f2 because it has fewer path components
+        assert_eq!(kept.original_name, "shallow.pdf");
+    }
+
+    #[test]
+    fn test_select_file_to_keep_newest() {
+        let tmp_dir = TempDir::new().unwrap();
+        let now = std::time::SystemTime::now();
+        let older = now - Duration::from_secs(3600);
+
+        // File 1: Older
+        let f1 = FileInfo {
+            original_path: tmp_dir.path().join("file1.pdf"),
+            original_name: "file1.pdf".to_string(),
+            extension: ".pdf".to_string(),
+            size: 100,
+            modified_time: older,
+            is_failed_download: false,
+            is_too_small: false,
+            new_name: None,
+            new_path: tmp_dir.path().join("file1.pdf"),
+        };
+
+        // File 2: Newer
+        let f2 = FileInfo {
+            original_path: tmp_dir.path().join("file2.pdf"),
+            original_name: "file2.pdf".to_string(),
+            extension: ".pdf".to_string(),
+            size: 100,
+            modified_time: now,
+            is_failed_download: false,
+            is_too_small: false,
+            new_name: None,
+            new_path: tmp_dir.path().join("file2.pdf"),
+        };
+
+        let files = vec![f1, f2];
+        let kept = select_file_to_keep(&files);
+
+        // Should keep f2 because it's newer (both have same depth and normalization status)
+        assert_eq!(kept.original_name, "file2.pdf");
+    }
+
+    #[test]
+    fn test_detect_duplicates_skip_hash() {
+        let tmp_dir = TempDir::new().unwrap();
+
+        let files = vec![
+            FileInfo {
+                original_path: tmp_dir.path().join("file1.pdf"),
+                original_name: "file1.pdf".to_string(),
+                extension: ".pdf".to_string(),
+                size: 100,
+                modified_time: std::time::SystemTime::now(),
+                is_failed_download: false,
+                is_too_small: false,
+                new_name: None,
+                new_path: tmp_dir.path().join("file1.pdf"),
+            }
+        ];
+
+        // Even if files are present, skip_hash=true should return empty duplicate groups
+        let (dup_groups, clean_files) = detect_duplicates(files.clone(), true).unwrap();
+
+        assert!(dup_groups.is_empty());
+        assert_eq!(clean_files.len(), 1);
+    }
+
+    #[test]
+    fn test_detect_name_variants() {
+        let tmp_dir = TempDir::new().unwrap();
+        let now = std::time::SystemTime::now();
+
+        let f1 = FileInfo {
+            original_path: tmp_dir.path().join("f1.pdf"),
+            original_name: "f1.pdf".to_string(),
+            extension: ".pdf".to_string(),
+            size: 100,
+            modified_time: now,
+            is_failed_download: false,
+            is_too_small: false,
+            new_name: Some("Book.pdf".to_string()),
+            new_path: tmp_dir.path().join("Book.pdf"),
+        };
+
+        let f2 = FileInfo {
+            original_path: tmp_dir.path().join("f2.pdf"),
+            original_name: "f2.pdf".to_string(),
+            extension: ".pdf".to_string(),
+            size: 100,
+            modified_time: now,
+            is_failed_download: false,
+            is_too_small: false,
+            new_name: Some("Book (1).pdf".to_string()),
+            new_path: tmp_dir.path().join("Book (1).pdf"),
+        };
+
+        let files = vec![f1, f2];
+        let variants = detect_name_variants(&files).unwrap();
+
+        assert_eq!(variants.len(), 1);
+        assert_eq!(variants[0].len(), 2);
+    }
+}

@@ -96,4 +96,14 @@ class Config:
     fetch_arxiv: bool
     verbose: bool
     delete_small: bool
+    auto_cleanup: bool
     json: bool
+
+
+@dataclass
+class CleanupResult:
+    """Result of cleanup operation."""
+    deleted_incomplete: List[str]
+    deleted_corrupted: List[str]
+    deleted_small: List[str]
+    failed_deletions: List[tuple]  # (path, error message)

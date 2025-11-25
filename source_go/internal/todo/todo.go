@@ -12,12 +12,13 @@ import (
 
 // TodoList manages todo items and file issues
 type TodoList struct {
-	items              []string
-	todoFilePath       string
-	failedDownloads    []string
-	smallFiles         []string
-	corruptedFiles     []string
-	otherIssues        []string
+	items           []string
+	todoFilePath    string
+	targetDir       string
+	failedDownloads []string
+	smallFiles      []string
+	corruptedFiles  []string
+	otherIssues     []string
 }
 
 // New creates a new TodoList instance
@@ -39,6 +40,7 @@ func New(todoFilePath, targetDir string) (*TodoList, error) {
 	return &TodoList{
 		items:           existingItems,
 		todoFilePath:    todoFilePath,
+		targetDir:       targetDir,
 		failedDownloads: []string{},
 		smallFiles:      []string{},
 		corruptedFiles:  []string{},
@@ -215,11 +217,21 @@ func validatePDFHeader(filePath string) error {
 func (tl *TodoList) generateTodoMD() string {
 	var md strings.Builder
 
-	md.WriteString("# 需要检查的任务\n\n")
-	md.WriteString(fmt.Sprintf("更新时间: %s\n\n", time.Now().Format("2006-01-02 15:04:05")))
+	md.WriteString("# 📚 电子书文件检查清单\n\n")
+	md.WriteString(fmt.Sprintf("**更新时间**: %s\n", time.Now().Format("2006-01-02 15:04:05")))
+	md.WriteString(fmt.Sprintf("**扫描目录**: `%s`\n\n", tl.targetDir))
+
+	// Count total issues
+	totalIssues := len(tl.failedDownloads) + len(tl.smallFiles) + len(tl.corruptedFiles) + len(tl.otherIssues)
+
+	if totalIssues > 0 {
+		md.WriteString(fmt.Sprintf("> ⚠️ 发现 **%d** 个需要处理的问题\n\n", totalIssues))
+	}
 
 	if len(tl.failedDownloads) > 0 {
-		md.WriteString("## 🔄 未完成下载文件（.download）\n\n")
+		md.WriteString("## 🔄 未完成下载文件\n\n")
+		md.WriteString("> 这些文件的下载未完成，建议删除后重新下载。\n")
+		md.WriteString("> 使用 `--auto-cleanup` 选项可以自动清理这些文件。\n\n")
 		for _, item := range tl.failedDownloads {
 			md.WriteString(fmt.Sprintf("- [ ] %s\n", item))
 		}
@@ -228,6 +240,8 @@ func (tl *TodoList) generateTodoMD() string {
 
 	if len(tl.smallFiles) > 0 {
 		md.WriteString("## 📁 异常小文件（< 1KB）\n\n")
+		md.WriteString("> 这些文件大小异常，可能是下载失败或文件损坏。\n")
+		md.WriteString("> 建议检查文件内容，如无效则删除并重新下载。\n\n")
 		for _, item := range tl.smallFiles {
 			md.WriteString(fmt.Sprintf("- [ ] %s\n", item))
 		}
@@ -236,6 +250,8 @@ func (tl *TodoList) generateTodoMD() string {
 
 	if len(tl.corruptedFiles) > 0 {
 		md.WriteString("## 🚨 损坏的PDF文件\n\n")
+		md.WriteString("> 这些PDF文件的头部信息无效，文件可能已损坏。\n")
+		md.WriteString("> 建议删除并从原始来源重新下载。\n\n")
 		for _, item := range tl.corruptedFiles {
 			md.WriteString(fmt.Sprintf("- [ ] %s\n", item))
 		}
@@ -278,7 +294,7 @@ func (tl *TodoList) generateTodoMD() string {
 				break
 			}
 		}
-		
+
 		if !isInCategory {
 			otherItems = append(otherItems, item)
 		}
@@ -293,11 +309,18 @@ func (tl *TodoList) generateTodoMD() string {
 	}
 
 	if len(tl.failedDownloads) == 0 && len(tl.smallFiles) == 0 && len(tl.corruptedFiles) == 0 && len(tl.otherIssues) == 0 && len(otherItems) == 0 {
-		md.WriteString("✅ 所有文件已检查完毕，无需处理的问题。\n\n")
+		md.WriteString("## ✅ 状态\n\n")
+		md.WriteString("所有文件已检查完毕，未发现需要处理的问题。\n\n")
 	}
 
+	// Add helpful tips
+	md.WriteString("---\n\n")
+	md.WriteString("### 💡 使用提示\n\n")
+	md.WriteString("- 使用 `--auto-cleanup` 自动清理未完成下载和损坏文件\n")
+	md.WriteString("- 使用 `--delete-small` 同时删除异常小文件\n")
+	md.WriteString("- 使用 `--dry-run` 预览操作而不执行\n\n")
 	md.WriteString("---\n")
-	md.WriteString("*此文件由 ebook renamer 自动生成*\n")
+	md.WriteString("*此文件由 ebook-renamer 自动生成*\n")
 
 	return md.String()
 }

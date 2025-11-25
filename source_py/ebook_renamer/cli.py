@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from .types import Config
+from .types import Config, CleanupResult, FileIssue
 from .scanner import Scanner
 from .normalizer import Normalizer
 from .duplicates import DuplicateDetector
@@ -98,6 +98,11 @@ detects duplicates, and generates a todo.md file for manual review.
         help="Delete small/corrupted files (< 1KB) instead of adding to todo list"
     )
     parser.add_argument(
+        "--auto-cleanup",
+        action="store_true",
+        help="Automatically clean up incomplete downloads (.download/.crdownload) and corrupted files"
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="Output operations in JSON format instead of human-readable text"
@@ -158,6 +163,7 @@ def parse_args() -> Config:
         fetch_arxiv=args.fetch_arxiv,
         verbose=args.verbose,
         delete_small=args.delete_small,
+        auto_cleanup=args.auto_cleanup,
         json=args.json,
     )
 
@@ -203,31 +209,94 @@ def process_files(config: Config) -> int:
     # Create todo list
     todo_list = TodoList(todo_file_path, config.path)
 
-    # Handle failed downloads and small files
+    # Categorize problematic files
+    incomplete_downloads = []  # .download, .crdownload files
+    corrupted_files = []       # Corrupted PDFs or unreadable files
+    small_files = []           # Files that are too small (< 1KB)
+    
+    for file_info in normalized:
+        if file_info.is_failed_download:
+            incomplete_downloads.append(file_info)
+        elif file_info.is_too_small:
+            small_files.append(file_info)
+        else:
+            # Check for corruption
+            if file_info.extension.lower() == ".pdf":
+                if not todo_list._validate_pdf_header(file_info.original_path):
+                    corrupted_files.append(file_info)
+
+    # Print summary of found issues
+    if not config.json:
+        print_issue_summary(incomplete_downloads, corrupted_files, small_files)
+
+    # Determine cleanup behavior based on flags
+    should_cleanup = config.auto_cleanup or config.delete_small
+    
+    # Track files to delete and todo items
     files_to_delete = []
     todo_items = []
+    cleanup_result = CleanupResult(
+        deleted_incomplete=[],
+        deleted_corrupted=[],
+        deleted_small=[],
+        failed_deletions=[]
+    )
 
-    for file_info in normalized:
-        if file_info.is_failed_download or file_info.is_too_small:
-            if config.delete_small:
-                files_to_delete.append(file_info.original_path)
-                todo_list.remove_file_from_todo(file_info.original_name)
-            else:
-                if file_info.is_failed_download:
-                    todo_list.add_failed_download(file_info)
-                    todo_items.append({
-                        "category": "failed_download",
-                        "file": file_info.original_name,
-                        "message": f"重新下载: {file_info.original_name} (未完成下载)"
-                    })
-                else:
-                    todo_list.add_failed_download(file_info)
-                    todo_items.append({
-                        "category": "too_small",
-                        "file": file_info.original_name,
-                        "message": f"检查并重新下载: {file_info.original_name} (文件过小，仅 {file_info.size} 字节)"
-                    })
+    # Process incomplete downloads
+    for file_info in incomplete_downloads:
+        if should_cleanup:
+            files_to_delete.append(file_info.original_path)
+            cleanup_result.deleted_incomplete.append(file_info.original_path)
+            todo_list.remove_file_from_todo(file_info.original_name)
         else:
+            todo_list.add_failed_download(file_info)
+            todo_items.append({
+                "category": "failed_download",
+                "file": file_info.original_name,
+                "message": f"重新下载: {file_info.original_name} (未完成下载)"
+            })
+    
+    # Process corrupted files
+    for file_info in corrupted_files:
+        if should_cleanup:
+            files_to_delete.append(file_info.original_path)
+            cleanup_result.deleted_corrupted.append(file_info.original_path)
+            todo_list.remove_file_from_todo(file_info.original_name)
+        else:
+            todo_list.add_file_issue(file_info, FileIssue.CORRUPTED_PDF)
+            todo_items.append({
+                "category": "corrupted",
+                "file": file_info.original_name,
+                "message": f"重新下载: {file_info.original_name} (PDF文件损坏)"
+            })
+    
+    # Process small files
+    for file_info in small_files:
+        if config.delete_small:
+            files_to_delete.append(file_info.original_path)
+            cleanup_result.deleted_small.append(file_info.original_path)
+            todo_list.remove_file_from_todo(file_info.original_name)
+        elif config.auto_cleanup:
+            # Auto-cleanup mode: add to todo for manual review (might be valid small ebook)
+            todo_list.add_failed_download(file_info)
+            todo_items.append({
+                "category": "too_small",
+                "file": file_info.original_name,
+                "message": f"检查文件: {file_info.original_name} (文件过小 {file_info.size} 字节，可能需要重新下载)"
+            })
+        else:
+            todo_list.add_failed_download(file_info)
+            todo_items.append({
+                "category": "too_small",
+                "file": file_info.original_name,
+                "message": f"检查并重新下载: {file_info.original_name} (文件过小，仅 {file_info.size} 字节)"
+            })
+    
+    # Analyze other files for integrity
+    for file_info in normalized:
+        if (file_info not in incomplete_downloads and 
+            file_info not in corrupted_files and 
+            file_info not in small_files):
             todo_list.analyze_file_integrity(file_info)
 
     # Detect duplicates
@@ -258,12 +327,83 @@ def process_files(config: Config) -> int:
             print("\n✓ todo.md written (dry-run mode)")
     else:
         # Execute operations
-        execute_operations(clean_files, duplicate_groups, files_to_delete, todo_list, config)
+        cleanup_result = execute_operations(
+            clean_files, duplicate_groups, files_to_delete, 
+            todo_list, config, cleanup_result
+        )
+        
+        # Print cleanup summary
+        if not config.json:
+            print_cleanup_summary(cleanup_result)
 
     if not config.json:
         print("\n✓ Operation completed successfully!")
 
     return 0
+
+
+def print_issue_summary(incomplete: list, corrupted: list, small: list) -> None:
+    """Print a summary of found issues."""
+    total_issues = len(incomplete) + len(corrupted) + len(small)
+    
+    if total_issues == 0:
+        print("\n📋 文件扫描完成，未发现问题文件")
+        return
+    
+    print(f"\n📋 发现 {total_issues} 个问题文件:")
+    print("-" * 40)
+    
+    if incomplete:
+        print(f"  🔄 未完成下载: {len(incomplete)} 个")
+        for f in incomplete[:3]:  # Show first 3
+            print(f"     • {f.original_name}")
+        if len(incomplete) > 3:
+            print(f"     ... 及其他 {len(incomplete) - 3} 个文件")
+    
+    if corrupted:
+        print(f"  🚨 损坏文件: {len(corrupted)} 个")
+        for f in corrupted[:3]:
+            print(f"     • {f.original_name}")
+        if len(corrupted) > 3:
+            print(f"     ... 及其他 {len(corrupted) - 3} 个文件")
+    
+    if small:
+        print(f"  📁 异常小文件: {len(small)} 个")
+        for f in small[:3]:
+            print(f"     • {f.original_name} ({f.size} 字节)")
+        if len(small) > 3:
+            print(f"     ... 及其他 {len(small) - 3} 个文件")
+    
+    print("-" * 40)
+
+
+def print_cleanup_summary(result: CleanupResult) -> None:
+    """Print a summary of cleanup operations."""
+    total_deleted = (len(result.deleted_incomplete) + 
+                    len(result.deleted_corrupted) + 
+                    len(result.deleted_small))
+    
+    if total_deleted == 0 and not result.failed_deletions:
+        return
+    
+    print("\n🧹 清理完成:")
+    print("-" * 40)
+    
+    if result.deleted_incomplete:
+        print(f"  ✓ 删除未完成下载: {len(result.deleted_incomplete)} 个")
+    
+    if result.deleted_corrupted:
+        print(f"  ✓ 删除损坏文件: {len(result.deleted_corrupted)} 个")
+    
+    if result.deleted_small:
+        print(f"  ✓ 删除异常小文件: {len(result.deleted_small)} 个")
+    
+    if result.failed_deletions:
+        print(f"  ⚠️  删除失败: {len(result.failed_deletions)} 个")
+        for path, error in result.failed_deletions[:3]:
+            print(f"     • {os.path.basename(path)}: {error}")
+    
+    print("-" * 40)
 
 
 def determine_todo_file(target_dir: str, custom_path: Optional[str]) -> str:
@@ -306,7 +446,8 @@ def print_human_output(clean_files, duplicate_groups, files_to_delete, todo_list
             print(f"  - [ ] {item}")
 
 
-def execute_operations(clean_files, duplicate_groups, files_to_delete, todo_list, config: Config):
+def execute_operations(clean_files, duplicate_groups, files_to_delete, 
+                       todo_list, config: Config, cleanup_result: CleanupResult) -> CleanupResult:
     """Execute the file operations."""
     # Execute renames
     for file_info in clean_files:
@@ -320,20 +461,34 @@ def execute_operations(clean_files, duplicate_groups, files_to_delete, todo_list
             if len(group) > 1:
                 for i, path in enumerate(group):
                     if i > 0:
-                        os.remove(path)
-                        logging.info(f"Deleted duplicate: {path}")
+                        try:
+                            os.remove(path)
+                            logging.info(f"Deleted duplicate: {path}")
+                        except OSError as e:
+                            logging.error(f"Failed to delete duplicate: {path}: {e}")
     
-    # Delete small/corrupted files
-    if config.delete_small and files_to_delete:
-        print(f"\nDeleting {len(files_to_delete)} small/corrupted files...")
+    # Delete problematic files (incomplete downloads, corrupted, small)
+    if files_to_delete:
         for path in files_to_delete:
-            os.remove(path)
-            logging.info(f"Deleted small/corrupted file: {path}")
-            print(f"  Deleted: {path}")
+            try:
+                os.remove(path)
+                logging.info(f"Deleted problematic file: {path}")
+            except OSError as e:
+                logging.error(f"Failed to delete file: {path}: {e}")
+                cleanup_result.failed_deletions.append((path, str(e)))
+                # Remove from the deleted lists if deletion failed
+                if path in cleanup_result.deleted_incomplete:
+                    cleanup_result.deleted_incomplete.remove(path)
+                if path in cleanup_result.deleted_corrupted:
+                    cleanup_result.deleted_corrupted.remove(path)
+                if path in cleanup_result.deleted_small:
+                    cleanup_result.deleted_small.remove(path)
     
     # Write todo.md
     todo_list.write()
     logging.info("Wrote todo.md")
+    
+    return cleanup_result
 
 
 if __name__ == "__main__":

@@ -105,7 +105,7 @@ When `--json` flag is used, the tool outputs structured JSON:
   "small_or_corrupted_deletes": [
     {
       "path": "small/file.pdf",
-      "issue": "deleted"
+      "issue": "failed_download_cleanup"
     }
   ],
   "todo_items": [
@@ -164,6 +164,8 @@ All implementations follow the same modular architecture:
 - **Duplicates**: `.pdf`, `.epub`, `.txt`
 - **Failed Downloads**: `.download`, `.crdownload`
 - **All Formats**: `.pdf`, `.epub`, `.txt`, `.mobi`, `.download`, `.crdownload`
+
+未完成的 `.download/.crdownload` 文件会自动记录到 `todo.md` 并在非 dry-run 运行时清理掉实际文件，`todo.md` 会追加「自动清理记录」说明，提醒可以在需要时重新下载。
 
 ### Normalization Rules
 1. Remove series prefixes (e.g., "Graduate Texts in Mathematics")

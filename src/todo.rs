@@ -106,27 +106,27 @@ impl TodoList {
         }
     }
 
-    pub fn analyze_file_integrity(&mut self, file_info: &FileInfo) -> Result<()> {
+    pub fn analyze_file_integrity(&mut self, file_info: &FileInfo) -> Result<bool> {
         // Skip if already marked as failed or too small
         if file_info.is_failed_download || file_info.is_too_small {
-            return Ok(());
+            return Ok(false);
         }
 
         // Check PDF integrity for PDF files
         if file_info.extension.to_lowercase() == ".pdf" {
             if let Err(_) = validate_pdf_header(&file_info.original_path) {
                 self.add_file_issue(file_info, FileIssue::CorruptedPdf)?;
-                return Ok(());
+                return Ok(true);
             }
         }
 
         // Check file readability
         if let Err(_) = fs::metadata(&file_info.original_path) {
             self.add_file_issue(file_info, FileIssue::ReadError)?;
-            return Ok(());
+            return Ok(true);
         }
 
-        Ok(())
+        Ok(false)
     }
 
     pub fn remove_file_from_todo(&mut self, filename: &str) {

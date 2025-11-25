@@ -96,6 +96,13 @@ pub struct Args {
     )]
     pub delete_small: bool,
 
+    /// Log failed/incomplete downloads to todo.md AND delete the files
+    #[arg(
+        long,
+        help = "Log failed/incomplete downloads to todo.md AND delete the files"
+    )]
+    pub clean_failed: bool,
+
     /// Output results in JSON format (for testing)
     #[arg(
         long,

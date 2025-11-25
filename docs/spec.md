@@ -104,6 +104,11 @@ These exact suffixes are removed:
 - ` z-Library.pdf`
 - ` Anna's Archive.pdf`
 
+Additional patterns removed:
+- `Uploaded by ...` (e.g., "Uploaded by user123")
+- `Via ...`
+- Website URLs (e.g., `www.example.com`, `site.net`, etc.)
+
 ### Year Extraction
 - Pattern: `\b(19|20)\d{2}\b`
 - Returns the **last** year found (rightmost match)
@@ -128,7 +133,9 @@ These exact suffixes are removed:
 - Remove source indicators (same list as above)
 - Remove `.download` suffixes
 - Remove `(auth.)` patterns
-- Clean orphaned brackets/parentheses
+- Clean orphaned brackets/parentheses:
+  - Unclosed opening brackets/parentheses are removed
+  - Orphaned closing brackets/parentheses are removed
 - Replace underscores with spaces
 - Collapse multiple spaces to single space
 - Trim leading/trailing `- : , ;`

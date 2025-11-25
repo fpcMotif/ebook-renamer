@@ -34,10 +34,7 @@ pub struct Args {
     pub max_depth: usize,
 
     /// Disable recursive scanning, only process top-level directory
-    #[arg(
-        long,
-        help = "Only scan the top-level directory, no recursion"
-    )]
+    #[arg(long, help = "Only scan the top-level directory, no recursion")]
     pub no_recursive: bool,
 
     /// Custom file extensions to process
@@ -49,10 +46,7 @@ pub struct Args {
     pub extensions: Option<String>,
 
     /// Don't delete duplicate files, only report
-    #[arg(
-        long,
-        help = "Don't delete duplicates, only list them"
-    )]
+    #[arg(long, help = "Don't delete duplicates, only list them")]
     pub no_delete: bool,
 
     /// Custom path for todo.md
@@ -79,10 +73,7 @@ pub struct Args {
     pub preserve_unicode: bool,
 
     /// Fetch arXiv metadata (placeholder for future implementation)
-    #[arg(
-        long,
-        help = "Fetch arXiv metadata via API (not implemented yet)"
-    )]
+    #[arg(long, help = "Fetch arXiv metadata via API (not implemented yet)")]
     pub fetch_arxiv: bool,
 
     /// Verbose output
@@ -92,7 +83,7 @@ pub struct Args {
     /// Automatically delete small/corrupted files (< 1KB)
     #[arg(
         long,
-        help = "Delete small/corrupted files (< 1KB) instead of adding to todo list"
+        help = "Silently delete small/corrupted files (< 1KB) without adding them to todo.md (默认行为会记录提醒后再清理)"
     )]
     pub delete_small: bool,
 
@@ -126,11 +117,7 @@ impl Args {
                 .map(|s| format!(".{}", s.trim().trim_start_matches('.')))
                 .collect()
         } else {
-            vec![
-                ".pdf".to_string(),
-                ".epub".to_string(),
-                ".txt".to_string(),
-            ]
+            vec![".pdf".to_string(), ".epub".to_string(), ".txt".to_string()]
         }
     }
 }

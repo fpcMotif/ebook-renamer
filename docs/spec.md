@@ -20,7 +20,7 @@ This document defines the canonical behavior for all ebook-renamer implementatio
 | `--preserve-unicode` | `false` | Preserve original non-Latin script (currently unused). |
 | `--fetch-arxiv` | `false` | Fetch arXiv metadata via API (placeholder only). |
 | `--verbose`, `-v` | `false` | Enable verbose logging (currently unused). |
-| `--delete-small` | `false` | Delete small/corrupted files (< 1KB) instead of adding to todo list. |
+| `--delete-small` | `false` | Silently delete small/corrupted files (< 1KB) **without** adding them to todo.md. (默认情况下依旧会记录 todo，然后清理文件) |
 | `--json` | `false` | Output operations in JSON format instead of human-readable text. |
 
 ### Output Behavior
@@ -204,6 +204,11 @@ When multiple files have identical MD5 hash:
 - Avoids adding duplicate entries
 - Removes items from todo when files are deleted
 
+### 自动清理逻辑
+- `.download` / `.crdownload` 文件、异常小的 `.pdf/.epub`（<1KB）以及判定为 `CorruptedPdf` 的 PDF 均会在记录 todo 后立即从磁盘中删除，避免污染下载目录。
+- `--delete-small` 选项仅控制这些文件是否写入 todo：开启后会静默删除且不生成提醒；默认情况下仍然会生成 todo 项以便后续重新下载。
+- 删除动作会在 CLI 输出中按问题类型汇总，也会写入 JSON `small_or_corrupted_deletes` 数组。
+
 ## 6. JSON Output Schema
 
 ### Format
@@ -225,7 +230,7 @@ When multiple files have identical MD5 hash:
   "small_or_corrupted_deletes": [
     {
       "path": "path/to/small.ext",
-      "issue": "deleted"
+      "issue": "failed_download"
     }
   ],
   "todo_items": [
@@ -254,6 +259,11 @@ For cross-language consistency, all JSON arrays are sorted deterministically:
 - `duplicate_deletes`: sorted by `keep` field, with `delete` arrays sorted internally
 - `small_or_corrupted_deletes`: sorted by `path` field
 - `todo_items`: sorted by `category` field, then by `file` field
+
+### Cleanup Reason Codes
+- `failed_download`: `.download` / `.crdownload` 文件被清理
+- `too_small`: PDF/EPUB 体积 < 1KB
+- `corrupted_pdf`: PDF 头部损坏（缺少 `%PDF-`）
 
 ## 7. Edge Cases and Current Limitations
 

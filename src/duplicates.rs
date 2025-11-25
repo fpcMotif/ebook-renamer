@@ -8,21 +8,27 @@ use std::path::PathBuf;
 // Allowed formats to keep
 const ALLOWED_EXTENSIONS: &[&str] = &[".pdf", ".epub", ".txt"];
 
-pub fn detect_duplicates(files: Vec<FileInfo>, skip_hash: bool) -> Result<(Vec<Vec<PathBuf>>, Vec<FileInfo>)> {
+pub fn detect_duplicates(
+    files: Vec<FileInfo>,
+    skip_hash: bool,
+) -> Result<(Vec<Vec<PathBuf>>, Vec<FileInfo>)> {
     // Filter to only allowed formats first
     let filtered_files: Vec<FileInfo> = files
         .into_iter()
         .filter(|f| ALLOWED_EXTENSIONS.contains(&f.extension.as_str()))
         .collect();
-    
-    debug!("Filtered to {} files with allowed extensions", filtered_files.len());
-    
+
+    debug!(
+        "Filtered to {} files with allowed extensions",
+        filtered_files.len()
+    );
+
     // If skip_hash is true, skip duplicate detection entirely
     if skip_hash {
         debug!("Skipping MD5 hash computation (cloud storage mode)");
         return Ok((Vec::new(), filtered_files));
     }
-    
+
     // Build hash map: file_hash -> list of file infos
     let mut hash_map: HashMap<String, Vec<FileInfo>> = HashMap::new();
 
@@ -44,10 +50,10 @@ pub fn detect_duplicates(files: Vec<FileInfo>, skip_hash: bool) -> Result<(Vec<V
         if file_infos.len() > 1 {
             // Multiple files with same hash - apply retention strategy
             let kept_file = select_file_to_keep(&file_infos);
-            
+
             let mut group_paths: Vec<PathBuf> = Vec::new();
             group_paths.push(kept_file.original_path.clone());
-            
+
             for file_info in &file_infos {
                 if file_info.original_path != kept_file.original_path {
                     duplicate_paths.insert(file_info.original_path.clone());
@@ -56,7 +62,11 @@ pub fn detect_duplicates(files: Vec<FileInfo>, skip_hash: bool) -> Result<(Vec<V
             }
 
             duplicate_groups.push(group_paths);
-            debug!("Found duplicate group with {} files, keeping: {}", file_infos.len(), kept_file.original_name);
+            debug!(
+                "Found duplicate group with {} files, keeping: {}",
+                file_infos.len(),
+                kept_file.original_name
+            );
         }
     }
 
@@ -78,26 +88,32 @@ fn select_file_to_keep(files: &[FileInfo]) -> &FileInfo {
         .filter(|(_, f)| f.new_name.is_some())
         .map(|(i, _)| i)
         .collect();
-    
+
     // Use the original files slice, but remember which ones are normalized
     let normalized_set: std::collections::HashSet<usize> = normalized_indices.into_iter().collect();
-    
+
     // Priority 2: Shortest path (fewest directory components) among normalized files, then all files
     let candidates_with_depth: Vec<(usize, usize)> = files
         .iter()
         .enumerate()
         .map(|(i, f)| (i, f.original_path.components().count()))
         .collect();
-    
+
     let min_depth = if normalized_set.is_empty() {
-        candidates_with_depth.iter().map(|(_, d)| *d).min().unwrap_or(usize::MAX)
+        candidates_with_depth
+            .iter()
+            .map(|(_, d)| *d)
+            .min()
+            .unwrap_or(usize::MAX)
     } else {
-        candidates_with_depth.iter()
+        candidates_with_depth
+            .iter()
             .filter(|(i, _)| normalized_set.contains(i))
             .map(|(_, d)| *d)
-            .min().unwrap_or(usize::MAX)
+            .min()
+            .unwrap_or(usize::MAX)
     };
-    
+
     let shallowest_indices: Vec<usize> = candidates_with_depth
         .into_iter()
         .filter(|(i, depth)| {
@@ -105,7 +121,7 @@ fn select_file_to_keep(files: &[FileInfo]) -> &FileInfo {
         })
         .map(|(i, _)| i)
         .collect();
-    
+
     // Priority 3: Newest modification time among the shallowest candidates
     let best_index = shallowest_indices
         .iter()
@@ -118,7 +134,7 @@ fn select_file_to_keep(files: &[FileInfo]) -> &FileInfo {
             }
             0
         });
-    
+
     &files[best_index]
 }
 
@@ -185,8 +201,8 @@ fn compute_md5(path: &std::path::Path) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
     use std::time::Duration;
+    use tempfile::TempDir;
 
     #[test]
     fn test_detect_duplicates_by_hash() -> Result<()> {
@@ -234,18 +250,9 @@ mod tests {
 
     #[test]
     fn test_strip_variant_suffix() {
-        assert_eq!(
-            strip_variant_suffix("Book Title (1).pdf"),
-            "Book Title.pdf"
-        );
-        assert_eq!(
-            strip_variant_suffix("Another (2).epub"),
-            "Another.epub"
-        );
-        assert_eq!(
-            strip_variant_suffix("No Variant.pdf"),
-            "No Variant.pdf"
-        );
+        assert_eq!(strip_variant_suffix("Book Title (1).pdf"), "Book Title.pdf");
+        assert_eq!(strip_variant_suffix("Another (2).epub"), "Another.epub");
+        assert_eq!(strip_variant_suffix("No Variant.pdf"), "No Variant.pdf");
     }
 
     #[test]
@@ -368,19 +375,17 @@ mod tests {
     fn test_detect_duplicates_skip_hash() {
         let tmp_dir = TempDir::new().unwrap();
 
-        let files = vec![
-            FileInfo {
-                original_path: tmp_dir.path().join("file1.pdf"),
-                original_name: "file1.pdf".to_string(),
-                extension: ".pdf".to_string(),
-                size: 100,
-                modified_time: std::time::SystemTime::now(),
-                is_failed_download: false,
-                is_too_small: false,
-                new_name: None,
-                new_path: tmp_dir.path().join("file1.pdf"),
-            }
-        ];
+        let files = vec![FileInfo {
+            original_path: tmp_dir.path().join("file1.pdf"),
+            original_name: "file1.pdf".to_string(),
+            extension: ".pdf".to_string(),
+            size: 100,
+            modified_time: std::time::SystemTime::now(),
+            is_failed_download: false,
+            is_too_small: false,
+            new_name: None,
+            new_path: tmp_dir.path().join("file1.pdf"),
+        }];
 
         // Even if files are present, skip_hash=true should return empty duplicate groups
         let (dup_groups, clean_files) = detect_duplicates(files.clone(), true).unwrap();

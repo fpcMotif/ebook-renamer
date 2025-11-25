@@ -16,6 +16,7 @@ All three implementations produce identical JSON output and follow the same dete
 - 🔍 **File Scanning**: Recursive directory scanning with configurable depth
 - 📝 **Filename Normalization**: Intelligent parsing of author, title, and year
 - 🔄 **Duplicate Detection**: MD5-based duplicate detection with smart retention strategy
+- 🧹 **自动清理**: 记录 todo 后立即清理未完成或损坏的下载，保持下载目录整洁
 - 📋 **Todo List Generation**: Automatic generation of `todo.md` for manual review
 - ⚡ **JSON Output**: Machine-readable output for automation and testing
 - 🌐 **Multi-Platform**: Works on Windows, macOS, and Linux
@@ -78,7 +79,7 @@ Options:
   --extensions EXT      Comma-separated extensions (default: pdf,epub,txt)
   --no-delete           Don't delete duplicates, only list them
   --todo-file PATH      Custom todo.md location
-  --delete-small        Delete files < 1KB instead of adding to todo
+  --delete-small        Silently delete tiny/corrupted files without writing them to todo.md
   --preserve-unicode    Preserve non-Latin scripts
   --verbose             Enable verbose logging
 ```
@@ -105,7 +106,7 @@ When `--json` flag is used, the tool outputs structured JSON:
   "small_or_corrupted_deletes": [
     {
       "path": "small/file.pdf",
-      "issue": "deleted"
+      "issue": "failed_download"
     }
   ],
   "todo_items": [
@@ -117,6 +118,8 @@ When `--json` flag is used, the tool outputs structured JSON:
   ]
 }
 ```
+
+`issue` 字段会标记清理原因（`failed_download` / `too_small` / `corrupted_pdf`），方便跨语言对齐。
 
 ## Testing and Validation
 

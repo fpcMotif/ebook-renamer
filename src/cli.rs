@@ -116,6 +116,28 @@ pub struct Args {
         help = "Automatically remove empty .download/.crdownload folders after extracting PDFs"
     )]
     pub cleanup_downloads: bool,
+
+    /// Automatically clean up all problematic files (combines --delete-small and --cleanup-downloads)
+    #[arg(
+        long,
+        help = "Automatically clean up all problematic files: delete small/corrupted files and remove empty download folders (recommended for most users)"
+    )]
+    pub auto_cleanup: bool,
+
+    /// Prompt for confirmation before deleting files
+    #[arg(
+        long,
+        help = "Ask for user confirmation before deleting files (ignored in dry-run or when combined with --yes)"
+    )]
+    pub interactive: bool,
+
+    /// Skip all confirmation prompts (assume yes to all)
+    #[arg(
+        long,
+        short = 'y',
+        help = "Skip confirmation prompts and proceed automatically"
+    )]
+    pub yes: bool,
 }
 
 impl Args {
@@ -157,6 +179,9 @@ mod tests {
             json: false,
             skip_cloud_hash: false,
             cleanup_downloads: false,
+            auto_cleanup: false,
+            interactive: false,
+            yes: false,
         };
 
         let exts = args.get_extensions();
@@ -184,6 +209,9 @@ mod tests {
             json: false,
             skip_cloud_hash: false,
             cleanup_downloads: false,
+            auto_cleanup: false,
+            interactive: false,
+            yes: false,
         };
 
         let exts = args.get_extensions();
@@ -210,6 +238,9 @@ mod tests {
             json: false,
             skip_cloud_hash: false,
             cleanup_downloads: false,
+            auto_cleanup: false,
+            interactive: false,
+            yes: false,
         };
 
         let exts = args.get_extensions();

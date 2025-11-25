@@ -54,6 +54,7 @@ Examples:
 - `(Cambridge University Press)` → remove
 - `(Foundations of Computer Science)` → remove
 - Any parenthetical containing publisher keywords
+- **NOTE:** Matching is case-insensitive.
 
 #### Source Markers (Remove ALL)
 - `- Z-Library`
@@ -70,6 +71,9 @@ Examples:
 - Only strip if it appears **after** the title/author portion
 
 #### Other Patterns to Remove
+- **Version Info:** `v1.0`, `version 2.0`, `3rd Edition`
+- **Page Counts:** `500 pages`, `200pp`
+- **Language Tags:** `English Edition`, `Chinese Edition`
 - `(auth.)` or `(Auth.)` → remove
 - `.download` suffix → remove
 - Multiple spaces → single space
@@ -77,18 +81,58 @@ Examples:
 
 ### 4. Publisher/Series Detection Keywords
 
-If parenthetical content contains any of these keywords, remove it:
+If parenthetical content contains any of these keywords (case-insensitive), remove it:
 
+**Publishers:**
 ```
 Press, Publishing, Academic Press, Springer, Cambridge, Oxford, MIT Press,
-Series, Graduate Texts, Graduate Studies, Lecture Notes, Pure and Applied,
-Mathematics, Foundations of, Monographs, Studies, Collection, Textbook,
-Edition, Vol., Volume, No., Part
+Wiley, Pearson, McGraw-Hill, Elsevier, Taylor & Francis
+```
+
+**General Types:**
+```
+Fiction, Novel, Handbook, Manual, Guide, Reference,
+Cookbook, Workbook, Encyclopedia, Dictionary, Atlas, Anthology,
+Biography, Memoir, Essay, Poetry, Drama, Short Stories
+```
+
+**Academic Types:**
+```
+Thesis, Dissertation, Proceedings, Conference, Symposium, Workshop,
+Report, Technical Report, White Paper, Preprint, Manuscript,
+Lecture, Course Notes, Study Guide, Solutions Manual
+```
+
+**Series/Editions:**
+```
+Series, Textbook Series, Graduate Texts, Graduate Studies, Lecture Notes,
+Pure and Applied, Mathematics, Foundations of, Monographs, Studies, Collection,
+Textbook, Edition, Vol., Volume, No., Part,
+Revised Edition, Updated Edition, Expanded Edition,
+Abridged, Unabridged, Complete Edition, Anniversary Edition,
+Collector's Edition, Special Edition, 1st ed, 2nd ed, 3rd ed
+```
+
+**Format/Quality:**
+```
+OCR, Scanned, Retail, Searchable, Bookmarked, Optimized,
+Compressed, High Quality, HQ, DRM-free, No DRM, Cracked,
+Kindle Edition, PDF version, EPUB version, MOBI version
+```
+
+**Languages (Chinese/Japanese):**
+```
+理工, 出版社, 小说, 教材, 教程, 手册, 指南, 参考书, 文集, 论文集,
+丛书, 系列, 修订版, 第二版, 第三版, 增订版
+小説, 教科書, テキスト, ハンドブック, マニュアル, ガイド,
+講義, シリーズ, 改訂版, 第2版, 第3版, の
+English, Chinese, Japanese
 ```
 
 Also remove if:
 - Contains numbers with multiple non-letter characters (likely series info)
 - Matches pattern: `(YYYY, Publisher)` where YYYY is a year
+- Matches Version pattern (`v1.0`) or Page Count pattern (`500 pages`)
 
 ### 5. Author Detection Patterns
 
@@ -128,11 +172,11 @@ An author string is valid if:
 4. **Extract year** (find last occurrence of 19xx/20xx)
 5. **Remove parentheticals** containing:
    - Year patterns: `(YYYY, Publisher)` or `(YYYY)`
-   - Publisher/series keywords
+   - Publisher/series keywords (expanded list)
    - But preserve author names at the end
 6. **Parse author and title** using smart pattern matching
 7. **Clean author name** (handle commas, remove (auth.) patterns)
-8. **Clean title** (remove orphaned brackets, multiple spaces, trailing punctuation)
+8. **Clean title** (remove orphaned brackets, multiple spaces, trailing punctuation, version info, page counts)
 9. **Generate final filename**: `Author - Title (Year).ext`
 
 ### 8. Edge Cases
@@ -171,11 +215,12 @@ When implementing in other languages, ensure:
 - [ ] String manipulation functions
 - [ ] Year extraction (19xx/20xx pattern)
 - [ ] Parenthetical matching (handles nested)
-- [ ] Publisher keyword detection
+- [ ] Publisher keyword detection (Comprehensive list, Case-insensitive)
 - [ ] Author validation logic
 - [ ] Comma handling for author names
 - [ ] Multiple space cleanup
 - [ ] Trailing punctuation removal
+- [ ] Version and Page Count removal
 
 ## Test Cases
 
@@ -191,53 +236,27 @@ Use these examples to validate implementation:
 3. `Algebraic Topology - A Structural Introduction (Marco Grandis).pdf`
    → `Marco Grandis - Algebraic Topology - A Structural Introduction.pdf`
 
-### Multi-Author Cases
-4. `Lectures on harmonic analysis (Thomas H. Wolff, Izabella Aba, Carol Shubin).pdf`
-   → `Thomas H. Wolff, Izabella Aba, Carol Shubin - Lectures on harmonic analysis.pdf`
-   **Note:** Commas preserved for multi-author lists
+### Improvements Verification (New Cases)
+4. `Great Novel (Fiction) (John Doe).pdf`
+   → `John Doe - Great Novel.pdf` (Type removal)
 
-5. `Uncovering Quantum Field Theory and the Standard Model (Wolfgang Bietenholz, Uwe-Jens Wiese).pdf`
-   → `Wolfgang Bietenholz, Uwe-Jens Wiese - Uncovering Quantum Field Theory and the Standard Model.pdf`
+5. `Learn Python (3rd Edition) (2023).pdf`
+   → `Learn Python (2023).pdf` (Edition removal)
 
-6. `A supplement for Category theory for computing science (Michael Barr, Charles Wells).pdf`
-   → `Michael Barr, Charles Wells - A supplement for Category theory for computing science.pdf`
+6. `Book Title (OCR) (Searchable) (Author).pdf`
+   → `Author - Book Title.pdf` (Format removal)
 
-### Single-Word Comma Case
-7. `Higher Dimensional Categories From Double To Multiple Categories (Marco, Grandis).pdf`
-   → `Marco Grandis - Higher Dimensional Categories From Double To Multiple Categories.pdf`
-   **Note:** Single-word comma case is joined (unlike multi-author)
+7. `故事集 (小说) (作者).pdf`
+   → `作者 - 故事集.pdf` (Chinese type removal)
 
-### Nested Publisher Info
-8. `Theory of Categories (Pure and Applied Mathematics (Academic Press)) (Barry Mitchell).pdf`
-   → `Barry Mitchell - Theory of Categories.pdf`
-   **Note:** Nested publisher info removed
+8. `Title libgen.li.pdf`
+   → `Title.pdf` (Noise cleanup)
 
-### Trailing ID Noise
-9. `Math History A Long-Form Mathematics Textbook (The Long-Form Math Textbook Series)-B0F5TFL6ZQ.pdf`
-   → `Math History A Long-Form Mathematics Textbook.pdf`
-   **Note:** Series info and ASIN removed
+9. `Software Manual v2.0.pdf`
+   → `Software Manual.pdf` (Version pattern)
 
-### Non-Latin Authors (CJK)
-10. `文革时期中国农村的集体杀戮 Collective Killings in Rural China during the Cultural Revolution (苏阳).pdf`
-    → `苏阳 - 文革时期中国农村的集体杀戮 Collective Killings in Rural China during the Cultural Revolution.pdf`
-    **Note:** CJK author recognized and positioned correctly
-
-### Complex Cases with Years
-11. `Deadly Decision in Beijing. Succession Politics, Protest Repression, and the 1989 Tiananmen Massacre (Yang Su).pdf`
-    → `Yang Su - Deadly Decision in Beijing. Succession Politics, Protest Repression, and the 1989 Tiananmen Massacre (1989).pdf`
-    **Note:** Year extracted from title context
-
-12. `Local Fields (Jean-Pierre Serre).pdf`
-    → `Jean-Pierre Serre - Local Fields.pdf`
-
-13. `Tools for PDE Pseudodifferential Operators, Paradifferential Operators, and Layer Potentials (Michael E. Taylor).pdf`
-    → `Michael E. Taylor - Tools for PDE Pseudodifferential Operators, Paradifferential Operators, and Layer Potentials.pdf`
-
-14. `From Quantum Cohomology to Integrable Systems (Martin A. Guest).pdf`
-    → `Martin A. Guest - From Quantum Cohomology to Integrable Systems.pdf`
-
-15. `Bases cristallines des groupes quantiques (Masaki Kashiwara).pdf`
-    → `Masaki Kashiwara - Bases cristallines des groupes quantiques.pdf`
+10. `Huge Book 500 pages.pdf`
+    → `Huge Book.pdf` (Page count pattern)
 
 ## Notes
 
@@ -246,4 +265,3 @@ Use these examples to validate implementation:
 - **Author is optional** - if no clear author pattern, use title only
 - **Case sensitivity:** Preserve original capitalization of author names and titles
 - **Whitespace:** Normalize multiple spaces to single space, trim leading/trailing
-

@@ -106,6 +106,10 @@ fn clean_noise_sources(s: &str) -> String {
     // Remove trailing/embedded source markers comprehensively
     // Includes: Z-Library, libgen, Anna's Archive, hashes, and ISBN-like patterns
     let patterns = [
+        // Precise matches (Improved)
+        r"\s+libgen\.li$",                    // Ends with libgen.li (after extension strip)
+        r"\s*[-\(]?\s*[zZ]-?Library$",        // Ends with Z-Library
+
         // Z-Library variants
         r"\s*[-\(]?\s*[zZ]-?Library\s*[)\.]?",
         r"\s*\([zZ]-?Library\)",
@@ -361,47 +365,62 @@ fn clean_author_name(s: &str) -> String {
 }
 
 fn is_publisher_or_series_info(s: &str) -> bool {
+    // Case insensitive check
+    let s_lower = s.to_lowercase();
+
     // Common publisher/series keywords
     let publisher_keywords = [
-        "Press",
-        "Publishing",
-        "Academic Press",
-        "Springer",
-        "Cambridge",
-        "Oxford",
-        "MIT Press",
-        "Series",
-        "Textbook Series",
-        "Graduate Texts",
-        "Graduate Studies",
-        "Lecture Notes",
-        "Pure and Applied",
-        "Mathematics",
-        "Foundations of",
-        "Monographs",
-        "Studies",
-        "Collection",
-        "Textbook",
-        "Edition",
-        "Vol.",
-        "Volume",
-        "No.",
-        "Part",
-        "理工",
-        "出版社",
-        "の",  // Japanese "no" (of)
-        "Z-Library",
-        "libgen",
-        "Anna's Archive",
+        // Publishers
+        "press", "publishing", "academic press", "springer", "cambridge", "oxford", "mit press",
+        "wiley", "pearson", "mcgraw-hill", "elsevier", "taylor & francis",
+        // General Types
+        "fiction", "novel", "handbook", "manual", "guide", "reference",
+        "cookbook", "workbook", "encyclopedia", "dictionary", "atlas", "anthology",
+        "biography", "memoir", "essay", "poetry", "drama", "short stories",
+        // Academic Types
+        "thesis", "dissertation", "proceedings", "conference", "symposium", "workshop",
+        "report", "technical report", "white paper", "preprint", "manuscript",
+        "lecture", "course notes", "study guide", "solutions manual",
+        // Series/Editions
+        "series", "textbook series", "graduate texts", "graduate studies", "lecture notes",
+        "pure and applied", "mathematics", "foundations of", "monographs", "studies", "collection",
+        "textbook", "edition", "vol.", "volume", "no.", "part",
+        "revised edition", "updated edition", "expanded edition",
+        "abridged", "unabridged", "complete edition", "anniversary edition",
+        "collector's edition", "special edition", "1st ed", "2nd ed", "3rd ed",
+        // Format/Quality
+        "ocr", "scanned", "retail", "searchable", "bookmarked", "optimized",
+        "compressed", "high quality", "hq", "drm-free", "no drm", "cracked",
+        "kindle edition", "pdf version", "epub version", "mobi version",
+        // Chinese
+        "理工", "出版社", "小说", "教材", "教程", "手册", "指南", "参考书", "文集", "论文集",
+        "丛书", "系列", "修订版", "第二版", "第三版", "增订版",
+        // Japanese
+        "の", "小説", "教科書", "テキスト", "ハンドブック", "マニュアル", "ガイド",
+        "講義", "シリーズ", "改訂版", "第2版", "第3版",
+        // Noise
+        "z-library", "libgen", "anna's archive",
+        // Languages
+        "english", "chinese", "japanese",
     ];
     
     // If contains publisher keywords, it's likely publisher info
     for keyword in &publisher_keywords {
-        if s.contains(keyword) {
+        if s_lower.contains(keyword) {
             return true;
         }
     }
     
+    // Check for pattern matches (Versions, Pages)
+    // Version patterns: v1.0, ver 2.0, version 3.5
+    if Regex::new(r"(?i)\b(v|ver|version)\.?\s*\d+(\.\d+)*\b").unwrap().is_match(s) {
+        return true;
+    }
+    // Page count: 500 pages, 200pp, 300 P
+    if Regex::new(r"(?i)\b\d+\s*(?:pages?|pp?\.?|p)\b").unwrap().is_match(s) {
+        return true;
+    }
+
     // Detect hash patterns: 8+ hex chars or 16+ alphanumeric
     if Regex::new(r"[a-f0-9]{8,}").unwrap().is_match(s) && s.len() > 8 {
         return true;
@@ -420,6 +439,24 @@ fn is_publisher_or_series_info(s: &str) -> bool {
     false
 }
 
+fn remove_common_patterns(s: &str) -> String {
+    let mut s = s.to_string();
+
+    // Version patterns: v1.0, ver 2.0, version 3.5
+    let re_version = Regex::new(r"(?i)\b(v|ver|version)\.?\s*\d+(\.\d+)*\b").unwrap();
+    s = re_version.replace_all(&s, "").to_string();
+
+    // Page count: 500 pages, 200pp, 300 P
+    let re_pages = Regex::new(r"(?i)\b\d+\s*(?:pages?|pp?\.?|p)\b").unwrap();
+    s = re_pages.replace_all(&s, "").to_string();
+
+    // Language tags: English Edition, Chinese Edition
+    let re_lang_edition = Regex::new(r"(?i)\b(English|Chinese|Japanese)\s+Edition\b").unwrap();
+    s = re_lang_edition.replace_all(&s, "").to_string();
+
+    s
+}
+
 fn clean_title(s: &str) -> String {
     let mut s = s.trim().to_string();
 
@@ -433,8 +470,14 @@ fn clean_title(s: &str) -> String {
     let re_trailing_id = Regex::new(r"[-_][A-Za-z0-9]{8,}$").unwrap();
     s = re_trailing_id.replace_all(&s, "").to_string();
 
+    // Remove common patterns (Versions, Pages, etc.)
+    s = remove_common_patterns(&s);
+
     // Clean up orphaned brackets/parens
     s = clean_orphaned_brackets(&s);
+
+    // Remove empty parentheses that might have been left behind
+    s = Regex::new(r"\(\s*\)").unwrap().replace_all(&s, "").to_string();
 
     // Remove multiple spaces
     let re_space = Regex::new(r"\s+").unwrap();
@@ -811,5 +854,77 @@ mod tests {
         assert_eq!(metadata.title, "Sheaf Theory");
         assert!(!metadata.title.contains("London Mathematical"));
     }
-}
 
+    // NEW TESTS FOR IMPROVEMENTS
+
+    #[test]
+    fn test_general_book_type_identification() {
+        // "Great Novel (Fiction) (John Doe).pdf" -> "John Doe - Great Novel.pdf"
+        let metadata = parse_filename("Great Novel (Fiction) (John Doe).pdf", ".pdf").unwrap();
+        assert_eq!(metadata.authors, Some("John Doe".to_string()));
+        assert_eq!(metadata.title, "Great Novel");
+        assert!(!metadata.title.contains("Fiction"));
+    }
+
+    #[test]
+    fn test_version_info_removal() {
+        // "Learn Python (3rd Edition) (2023).pdf" -> "Learn Python (2023).pdf"
+        let metadata = parse_filename("Learn Python (3rd Edition) (2023).pdf", ".pdf").unwrap();
+        assert_eq!(metadata.title, "Learn Python");
+        assert_eq!(metadata.year, Some(2023));
+        assert!(!metadata.title.contains("3rd Edition"));
+    }
+
+    #[test]
+    fn test_format_marker_removal() {
+        // "Book Title (OCR) (Searchable) (Author).pdf" -> "Author - Book Title.pdf"
+        let metadata = parse_filename("Book Title (OCR) (Searchable) (Author).pdf", ".pdf").unwrap();
+        assert_eq!(metadata.authors, Some("Author".to_string()));
+        assert_eq!(metadata.title, "Book Title");
+        assert!(!metadata.title.contains("OCR"));
+        assert!(!metadata.title.contains("Searchable"));
+    }
+
+    #[test]
+    fn test_multilingual_type() {
+        // "故事集 (小说) (作者).pdf" -> "作者 - 故事集.pdf"
+        let metadata = parse_filename("故事集 (小说) (作者).pdf", ".pdf").unwrap();
+        assert_eq!(metadata.authors, Some("作者".to_string()));
+        assert_eq!(metadata.title, "故事集");
+        assert!(!metadata.title.contains("小说"));
+    }
+
+    #[test]
+    fn test_language_tag_removal() {
+        // "Book Title (English Edition) (Author).pdf" -> "Author - Book Title.pdf"
+        let metadata = parse_filename("Book Title (English Edition) (Author).pdf", ".pdf").unwrap();
+        assert_eq!(metadata.authors, Some("Author".to_string()));
+        assert_eq!(metadata.title, "Book Title");
+        assert!(!metadata.title.contains("English Edition"));
+    }
+
+    #[test]
+    fn test_noise_source_cleanup() {
+        // "Title libgen.li.pdf" -> "Title.pdf"
+        // parse_filename strips .pdf, so input is "Title libgen.li"
+        let metadata = parse_filename("Title libgen.li.pdf", ".pdf").unwrap();
+        assert_eq!(metadata.title, "Title");
+        assert!(!metadata.title.contains("libgen.li"));
+    }
+
+    #[test]
+    fn test_version_pattern_match() {
+        // "Software Manual v2.0.pdf" -> "Software Manual.pdf"
+        let metadata = parse_filename("Software Manual v2.0.pdf", ".pdf").unwrap();
+        assert_eq!(metadata.title, "Software Manual");
+        assert!(!metadata.title.contains("v2.0"));
+    }
+
+    #[test]
+    fn test_page_count_match() {
+        // "Huge Book 500 pages.pdf" -> "Huge Book.pdf"
+        let metadata = parse_filename("Huge Book 500 pages.pdf", ".pdf").unwrap();
+        assert_eq!(metadata.title, "Huge Book");
+        assert!(!metadata.title.contains("500 pages"));
+    }
+}

@@ -30,24 +30,68 @@ fn main() -> Result<()> {
     }
 
     // Step 1: Recover downloads from .download/.crdownload folders
-    let recovery = DownloadRecovery::new(&args.path, args.cleanup_downloads);
+    // Automatically enable cleanup for better UX - users don't need to think about it
+    let auto_cleanup = args.cleanup_downloads || !args.dry_run;
+    let recovery = DownloadRecovery::new(&args.path, auto_cleanup);
     let recovery_result = recovery.recover_downloads()?;
     
-    if !recovery_result.extracted_files.is_empty() {
-        info!("Recovered {} PDFs from download folders", recovery_result.extracted_files.len());
-        if args.dry_run && !args.json {
-            println!("{} Recovered {} PDFs from download folders", 
-                "✓".green().bold(),
-                recovery_result.extracted_files.len().to_string().cyan()
-            );
+    // Show recovery results with clear feedback
+    if !args.json {
+        if !recovery_result.extracted_files.is_empty() || !recovery_result.deleted_corrupted_files.is_empty() || !recovery_result.cleaned_folders.is_empty() {
+            println!("\n{} {}", "📥 下载恢复与清理:".bright_cyan().bold(), "");
+        }
+        
+        if !recovery_result.extracted_files.is_empty() {
+            info!("Recovered {} PDFs from download folders", recovery_result.extracted_files.len());
+            if args.dry_run {
+                println!("  {} 从下载文件夹中恢复 {} 个 PDF 文件", 
+                    "✓".green().bold(),
+                    recovery_result.extracted_files.len().to_string().cyan()
+                );
+            } else {
+                println!("  {} 已恢复 {} 个 PDF 文件", 
+                    "✓".green().bold(),
+                    recovery_result.extracted_files.len().to_string().cyan()
+                );
+            }
+        }
+        
+        if !recovery_result.deleted_corrupted_files.is_empty() {
+            info!("Deleted {} corrupted files during recovery", recovery_result.deleted_corrupted_files.len());
+            if args.dry_run {
+                println!("  {} 将删除 {} 个损坏的文件", 
+                    "🗑️".yellow().bold(),
+                    recovery_result.deleted_corrupted_files.len().to_string().yellow()
+                );
+            } else {
+                println!("  {} 已删除 {} 个损坏的文件", 
+                    "🗑️".red().bold(),
+                    recovery_result.deleted_corrupted_files.len().to_string().red()
+                );
+            }
+        }
+        
+        if !recovery_result.cleaned_folders.is_empty() {
+            info!("Cleaned {} empty download folders", recovery_result.cleaned_folders.len());
+            if args.dry_run {
+                println!("  {} 将清理 {} 个空下载文件夹", 
+                    "🧹".bright_blue().bold(),
+                    recovery_result.cleaned_folders.len().to_string().bright_blue()
+                );
+            } else {
+                println!("  {} 已清理 {} 个空下载文件夹", 
+                    "🧹".bright_blue().bold(),
+                    recovery_result.cleaned_folders.len().to_string().bright_blue()
+                );
+            }
         }
     }
     
     if !recovery_result.errors.is_empty() {
         info!("Encountered {} errors during download recovery", recovery_result.errors.len());
-        if args.dry_run && !args.json {
+        if !args.json {
             for error in &recovery_result.errors {
-                println!("{}  {}", "⚠️".yellow(), error.yellow());
+                println!("  {}  {}", "⚠️".yellow(), error.yellow());
             }
         }
     }
@@ -63,31 +107,44 @@ fn main() -> Result<()> {
     let normalized = normalizer::normalize_files(files)?;
     info!("Normalized {} files", normalized.len());
 
-    // Handle failed downloads and small files
+    // Handle failed downloads and small/corrupted files
+    // Business logic: Automatically clean up obviously broken files for better UX
+    // Users don't need to manually specify --delete-small for obvious cases
     let mut todo_list = todo::TodoList::new(&args.todo_file, &args.path)?;
     let mut files_to_delete = Vec::new();
     let mut todo_items = Vec::new();
     
+    // Auto-delete policy: Delete obviously broken files automatically
+    // This makes the UX more natural - users don't need to think about cleanup
+    let auto_delete_broken = args.delete_small || !args.dry_run;
+    
     for file_info in &normalized {
-        // Add existing failed/too small files
-        if file_info.is_failed_download || file_info.is_too_small {
-            if args.delete_small {
+        // Handle failed downloads and small files
+        if file_info.is_failed_download {
+            // Failed downloads (.download/.crdownload files) should always be deleted
+            // They're clearly incomplete and taking up space
+            if auto_delete_broken {
                 files_to_delete.push(file_info.original_path.clone());
-                // Remove this file from todo list since we're deleting it
                 todo_list.remove_file_from_todo(&file_info.original_name);
             } else {
                 todo_list.add_failed_download(file_info)?;
-                // Collect todo item for JSON output
-                let category = if file_info.is_failed_download { "failed_download" } else { "too_small" };
-                let message = if file_info.is_failed_download {
-                    format!("重新下载: {} (未完成下载)", file_info.original_name)
-                } else {
-                    format!("检查并重新下载: {} (文件过小，仅 {} 字节)", file_info.original_name, file_info.size)
-                };
-                todo_items.push((category.to_string(), file_info.original_name.clone(), message));
+                let message = format!("重新下载: {} (未完成下载)", file_info.original_name);
+                todo_items.push(("failed_download".to_string(), file_info.original_name.clone(), message));
+            }
+        } else if file_info.is_too_small {
+            // Very small files (< 1KB) are likely corrupted or incomplete
+            // Auto-delete them unless user explicitly wants to keep them
+            if auto_delete_broken {
+                files_to_delete.push(file_info.original_path.clone());
+                todo_list.remove_file_from_todo(&file_info.original_name);
+            } else {
+                todo_list.add_failed_download(file_info)?;
+                let message = format!("检查并重新下载: {} (文件过小，仅 {} 字节)", file_info.original_name, file_info.size);
+                todo_items.push(("too_small".to_string(), file_info.original_name.clone(), message));
             }
         } else {
             // Analyze file integrity for all other files
+            // This will detect corrupted PDFs and add them to todo list
             todo_list.analyze_file_integrity(file_info)?;
         }
     }
@@ -99,6 +156,15 @@ fn main() -> Result<()> {
     } else {
         info!("Detected {} duplicate groups", duplicate_groups.len());
     }
+
+    // Calculate statistics before moving values
+    let rename_count = clean_files.iter()
+        .filter(|f| f.new_name.is_some())
+        .count();
+    let duplicate_count: usize = duplicate_groups.iter()
+        .map(|g| if g.len() > 1 { g.len() - 1 } else { 0 })
+        .sum();
+    let files_to_delete_count = files_to_delete.len();
 
     // Show or execute renames
     if args.dry_run {
@@ -116,8 +182,7 @@ fn main() -> Result<()> {
             // Human-readable output with rich text
             println!("\n{}", "═══ DRY RUN MODE ═══".bold().bright_blue());
             
-            if !clean_files.is_empty() {
-                let mut rename_count = 0;
+            if rename_count > 0 {
                 for file_info in &clean_files {
                     if let Some(ref new_name) = file_info.new_name {
                         println!("{} {} {} {}", 
@@ -126,15 +191,12 @@ fn main() -> Result<()> {
                             "→".bright_blue().bold(),
                             new_name.bright_cyan()
                         );
-                        rename_count += 1;
                     }
                 }
-                if rename_count > 0 {
-                    println!("\n{} {} files to rename", 
-                        "📝".bright_white(),
-                        rename_count.to_string().bright_cyan().bold()
-                    );
-                }
+                println!("\n{} {} files to rename", 
+                    "📝".bright_white(),
+                    rename_count.to_string().bright_cyan().bold()
+                );
             }
             
             for group in &duplicate_groups {
@@ -156,14 +218,22 @@ fn main() -> Result<()> {
                 }
             }
 
-            if !files_to_delete.is_empty() {
-                println!("\n{}", "🗑️  SMALL/CORRUPTED FILES TO DELETE:".red().bold());
+            if files_to_delete_count > 0 {
+                println!("\n{}", "🗑️  将删除的损坏/未完成文件:".red().bold());
                 for path in &files_to_delete {
+                    let filename = path.file_name()
+                        .and_then(|n| n.to_str())
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| path.display().to_string());
                     println!("  {} {}", 
                         "DELETE:".red().bold(),
-                        path.display().to_string().bright_black()
+                        filename.bright_black()
                     );
                 }
+                println!("  {} 共 {} 个文件将被自动清理", 
+                    "ℹ️".bright_blue(),
+                    files_to_delete_count.to_string().bright_blue()
+                );
             }
             
             if !todo_list.items.is_empty() {
@@ -205,19 +275,43 @@ fn main() -> Result<()> {
             }
         }
 
-        // Delete small/corrupted files if requested
-        if args.delete_small && !files_to_delete.is_empty() {
-            println!("\n{} {} small/corrupted files...", 
-                "🗑️".bright_white(),
-                files_to_delete.len().to_string().red().bold()
-            );
-            for path in &files_to_delete {
-                std::fs::remove_file(path)?;
-                info!("Deleted small/corrupted file: {}", path.display());
-                println!("  {} {}", 
-                    "Deleted:".red().bold(),
-                    path.display().to_string().bright_black()
+        // Auto-delete broken files (natural business logic - clean up obviously broken files)
+        if files_to_delete_count > 0 {
+            if !args.json {
+                println!("\n{} 正在清理 {} 个损坏/未完成的文件...", 
+                    "🗑️".bright_white(),
+                    files_to_delete_count.to_string().red().bold()
                 );
+            }
+            for path in &files_to_delete {
+                match std::fs::remove_file(path) {
+                    Ok(_) => {
+                        info!("Deleted broken file: {}", path.display());
+                        if !args.json {
+                            let filename = path.file_name()
+                                .and_then(|n| n.to_str())
+                                .map(|s| s.to_string())
+                                .unwrap_or_else(|| path.display().to_string());
+                            println!("  {} {}", 
+                                "已删除:".red().bold(),
+                                filename.bright_black()
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        let error_msg = format!("Failed to delete {}: {}", path.display(), e);
+                        info!("{}", error_msg);
+                        if !args.json {
+                            println!("  {} {}", 
+                                "⚠️".yellow(),
+                                error_msg.yellow()
+                            );
+                        }
+                    }
+                }
+            }
+            if !args.json {
+                println!("  {} 清理完成", "✓".green().bold());
             }
         }
 
@@ -226,10 +320,61 @@ fn main() -> Result<()> {
         info!("Wrote todo.md");
     }
 
+    // Final summary with clear statistics
     if !args.json {
+        println!("\n{}", "═══ 操作总结 ═══".bold().bright_green());
+        
+        let mut has_operations = false;
+        
+        // Recovery summary
+        if !recovery_result.extracted_files.is_empty() || !recovery_result.deleted_corrupted_files.is_empty() {
+            has_operations = true;
+            if !recovery_result.extracted_files.is_empty() {
+                println!("  {} 恢复文件: {}", "📥".bright_cyan(), recovery_result.extracted_files.len().to_string().bright_cyan());
+            }
+            if !recovery_result.deleted_corrupted_files.is_empty() {
+                println!("  {} 清理损坏文件: {}", "🗑️".red(), recovery_result.deleted_corrupted_files.len().to_string().red());
+            }
+        }
+        
+        // Rename summary
+        if rename_count > 0 {
+            has_operations = true;
+            println!("  {} 重命名文件: {}", "📝".bright_blue(), rename_count.to_string().bright_blue());
+        }
+        
+        // Duplicate summary
+        if duplicate_count > 0 {
+            has_operations = true;
+            println!("  {} 删除重复文件: {}", "🔍".yellow(), duplicate_count.to_string().yellow());
+        }
+        
+        // Cleanup summary
+        if files_to_delete_count > 0 {
+            has_operations = true;
+            if args.dry_run {
+                println!("  {} 将清理损坏文件: {}", "🗑️".yellow(), files_to_delete_count.to_string().yellow());
+            } else {
+                println!("  {} 已清理损坏文件: {}", "🗑️".red(), files_to_delete_count.to_string().red());
+            }
+        }
+        
+        // Todo summary
+        if !todo_list.items.is_empty() {
+            has_operations = true;
+            println!("  {} 待处理任务: {} (已保存到 todo.md)", 
+                "📋".bright_yellow(), 
+                todo_list.items.len().to_string().bright_yellow()
+            );
+        }
+        
+        if !has_operations {
+            println!("  {} 没有需要处理的操作", "✓".green());
+        }
+        
         println!("\n{} {}", 
             "✓".green().bold(),
-            "Operation completed successfully!".bright_green().bold()
+            "操作完成！".bright_green().bold()
         );
     }
     Ok(())

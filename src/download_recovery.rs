@@ -12,6 +12,7 @@ pub struct DownloadRecovery {
 pub struct RecoveryResult {
     pub extracted_files: Vec<PathBuf>,
     pub cleaned_folders: Vec<PathBuf>,
+    pub deleted_corrupted_files: Vec<PathBuf>,
     pub errors: Vec<String>,
 }
 
@@ -27,6 +28,7 @@ impl DownloadRecovery {
         let mut result = RecoveryResult {
             extracted_files: Vec::new(),
             cleaned_folders: Vec::new(),
+            deleted_corrupted_files: Vec::new(),
             errors: Vec::new(),
         };
 
@@ -55,9 +57,10 @@ impl DownloadRecovery {
         }
 
         info!(
-            "Download recovery completed: {} files extracted, {} folders cleaned, {} errors",
+            "Download recovery completed: {} files extracted, {} folders cleaned, {} corrupted files deleted, {} errors",
             result.extracted_files.len(),
             result.cleaned_folders.len(),
+            result.deleted_corrupted_files.len(),
             result.errors.len()
         );
 
@@ -65,28 +68,74 @@ impl DownloadRecovery {
     }
 
     fn process_download_folder(&self, download_folder: &Path, result: &mut RecoveryResult) -> Result<()> {
-        // Find PDF files inside the download folder
+        // Find all files inside the download folder
         let mut pdf_files = Vec::new();
+        let mut other_files = Vec::new();
         
         for entry in fs::read_dir(download_folder)? {
             let entry = entry?;
             let path = entry.path();
             
             if path.is_file() {
+                let metadata = fs::metadata(&path).ok();
+                let size = metadata.map(|m| m.len()).unwrap_or(0);
+                
                 if let Some(extension) = path.extension().and_then(|e| e.to_str()) {
                     if extension.to_lowercase() == "pdf" {
-                        pdf_files.push(path);
+                        // Check if PDF is valid and not too small
+                        if size < 1024 {
+                            // File too small, mark for deletion
+                            debug!("Found corrupted PDF (too small): {:?}", path);
+                            if let Err(e) = fs::remove_file(&path) {
+                                debug!("Failed to delete corrupted file {:?}: {}", path, e);
+                            } else {
+                                info!("Deleted corrupted PDF (too small): {:?}", path.file_name().unwrap());
+                                result.deleted_corrupted_files.push(path.clone());
+                            }
+                        } else if let Err(_) = self.validate_pdf_header(&path) {
+                            // Invalid PDF header, mark for deletion
+                            debug!("Found corrupted PDF (invalid header): {:?}", path);
+                            if let Err(e) = fs::remove_file(&path) {
+                                debug!("Failed to delete corrupted file {:?}: {}", path, e);
+                            } else {
+                                info!("Deleted corrupted PDF (invalid header): {:?}", path.file_name().unwrap());
+                                result.deleted_corrupted_files.push(path.clone());
+                            }
+                        } else {
+                            pdf_files.push(path);
+                        }
+                    } else {
+                        // Non-PDF files - mark for deletion if they're suspiciously small
+                        if size < 100 {
+                            debug!("Found suspiciously small file: {:?}", path);
+                            if let Err(e) = fs::remove_file(&path) {
+                                debug!("Failed to delete suspicious file {:?}: {}", path, e);
+                            } else {
+                                info!("Deleted suspicious file: {:?}", path.file_name().unwrap());
+                                result.deleted_corrupted_files.push(path.clone());
+                            }
+                        } else {
+                            other_files.push(path);
+                        }
+                    }
+                } else {
+                    // Files without extension - mark for deletion if suspiciously small
+                    if size < 100 {
+                        debug!("Found suspiciously small file without extension: {:?}", path);
+                        if let Err(e) = fs::remove_file(&path) {
+                            debug!("Failed to delete suspicious file {:?}: {}", path, e);
+                        } else {
+                            info!("Deleted suspicious file: {:?}", path.file_name().unwrap());
+                            result.deleted_corrupted_files.push(path.clone());
+                        }
+                    } else {
+                        other_files.push(path);
                     }
                 }
             }
         }
 
-        if pdf_files.is_empty() {
-            debug!("No PDF files found in download folder: {:?}", download_folder);
-            return Ok(());
-        }
-
-        // Extract each PDF file
+        // Extract valid PDF files
         for pdf_file in pdf_files {
             let new_name = self.clean_filename(pdf_file.file_name().unwrap().to_str().unwrap());
             let new_path = self.target_dir.join(&new_name);
@@ -98,18 +147,53 @@ impl DownloadRecovery {
         }
 
         // Clean up empty download folder if auto_cleanup is enabled
+        // Also clean up if folder only contains non-PDF files (which we've already handled)
         if self.auto_cleanup {
-            match fs::remove_dir(download_folder) {
-                Ok(_) => {
-                    info!("Removed empty download folder: {:?}", download_folder);
-                    result.cleaned_folders.push(download_folder.to_path_buf());
+            // Check if folder is empty (all files have been extracted or deleted)
+            let remaining_files: Vec<_> = fs::read_dir(download_folder)?
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().is_file())
+                .collect();
+            
+            if remaining_files.is_empty() {
+                // Try to remove the folder - it should be empty now
+                match fs::remove_dir(download_folder) {
+                    Ok(_) => {
+                        info!("Removed empty download folder: {:?}", download_folder);
+                        result.cleaned_folders.push(download_folder.to_path_buf());
+                    }
+                    Err(e) => {
+                        debug!("Failed to remove download folder {:?}: {}", download_folder, e);
+                    }
                 }
-                Err(e) => {
-                    debug!("Failed to remove download folder {:?}: {}", download_folder, e);
-                }
+            } else {
+                debug!("Download folder {:?} still contains {} files, not removing", 
+                    download_folder, remaining_files.len());
             }
         }
 
+        Ok(())
+    }
+
+    fn validate_pdf_header(&self, path: &Path) -> Result<()> {
+        use std::io::Read;
+        
+        let mut file = fs::File::open(path)?;
+        let mut header = [0u8; 5];
+        
+        // Try to read header, if file is too small, it's corrupted
+        match file.read_exact(&mut header) {
+            Ok(_) => {
+                // PDF files should start with "%PDF-"
+                if &header != b"%PDF-" {
+                    return Err(anyhow::anyhow!("Invalid PDF header"));
+                }
+            }
+            Err(e) => {
+                return Err(anyhow::anyhow!("File too small to be valid PDF: {}", e));
+            }
+        }
+        
         Ok(())
     }
 
@@ -186,6 +270,7 @@ mod tests {
         
         assert!(result.extracted_files.is_empty());
         assert!(result.cleaned_folders.is_empty());
+        assert!(result.deleted_corrupted_files.is_empty());
         assert!(result.errors.is_empty());
         
         Ok(())
@@ -195,12 +280,16 @@ mod tests {
     fn test_recover_downloads_with_folder() -> Result<()> {
         let tmp_dir = TempDir::new()?;
         
-        // Create a .download folder with a PDF inside
+        // Create a .download folder with a valid PDF inside
         let download_folder = tmp_dir.path().join("test.pdf.download");
         fs::create_dir(&download_folder)?;
         
+        // Create a valid PDF file (minimal PDF with correct header, > 1KB to avoid deletion)
+        let mut pdf_content = b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\nxref\n0 1\ntrailer\n<< /Size 1 /Root 1 0 R >>\nstartxref\n100\n%%EOF".to_vec();
+        // Pad to ensure it's > 1KB
+        pdf_content.extend(vec![0u8; 1500 - pdf_content.len()]);
         let pdf_inside = download_folder.join("Test Book (Z-Library).pdf");
-        fs::write(&pdf_inside, "dummy pdf content")?;
+        fs::write(&pdf_inside, &pdf_content)?;
         
         let recovery = DownloadRecovery::new(tmp_dir.path(), true);
         let result = recovery.recover_downloads()?;
@@ -221,12 +310,16 @@ mod tests {
     fn test_recover_downloads_no_auto_cleanup() -> Result<()> {
         let tmp_dir = TempDir::new()?;
 
-        // Create a .download folder with a PDF inside
+        // Create a .download folder with a valid PDF inside
         let download_folder = tmp_dir.path().join("test.pdf.download");
         fs::create_dir(&download_folder)?;
 
+        // Create a valid PDF file (minimal PDF with correct header, > 1KB to avoid deletion)
+        let mut pdf_content = b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\nxref\n0 1\ntrailer\n<< /Size 1 /Root 1 0 R >>\nstartxref\n100\n%%EOF".to_vec();
+        // Pad to ensure it's > 1KB
+        pdf_content.extend(vec![0u8; 1500 - pdf_content.len()]);
         let pdf_inside = download_folder.join("Test Book (Z-Library).pdf");
-        fs::write(&pdf_inside, "dummy pdf content")?;
+        fs::write(&pdf_inside, &pdf_content)?;
 
         let recovery = DownloadRecovery::new(tmp_dir.path(), false); // auto_cleanup = false
         let result = recovery.recover_downloads()?;
@@ -244,12 +337,16 @@ mod tests {
     fn test_recover_downloads_with_crdownload() -> Result<()> {
         let tmp_dir = TempDir::new()?;
 
-        // Create a .crdownload folder with a PDF inside
+        // Create a .crdownload folder with a valid PDF inside
         let download_folder = tmp_dir.path().join("test.pdf.crdownload");
         fs::create_dir(&download_folder)?;
 
+        // Create a valid PDF file (minimal PDF with correct header, > 1KB to avoid deletion)
+        let mut pdf_content = b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\nxref\n0 1\ntrailer\n<< /Size 1 /Root 1 0 R >>\nstartxref\n100\n%%EOF".to_vec();
+        // Pad to ensure it's > 1KB
+        pdf_content.extend(vec![0u8; 1500 - pdf_content.len()]);
         let pdf_inside = download_folder.join("Test Book.pdf");
-        fs::write(&pdf_inside, "dummy pdf content")?;
+        fs::write(&pdf_inside, &pdf_content)?;
 
         let recovery = DownloadRecovery::new(tmp_dir.path(), true);
         let result = recovery.recover_downloads()?;

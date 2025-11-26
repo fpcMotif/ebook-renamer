@@ -147,13 +147,25 @@ class TodoList:
         """Generate the markdown content for the todo list."""
         lines = []
         
-        lines.append("# 需要检查的任务")
+        lines.append("# 📚 电子书文件检查清单")
         lines.append("")
-        lines.append(f"更新时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        lines.append(f"**更新时间**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        lines.append(f"**扫描目录**: `{self.target_dir}`")
         lines.append("")
         
+        # Count total issues
+        total_issues = (len(self.failed_downloads) + len(self.small_files) + 
+                       len(self.corrupted_files) + len(self.other_issues))
+        
+        if total_issues > 0:
+            lines.append(f"> ⚠️ 发现 **{total_issues}** 个需要处理的问题")
+            lines.append("")
+        
         if self.failed_downloads:
-            lines.append("## 🔄 未完成下载文件（.download）")
+            lines.append("## 🔄 未完成下载文件")
+            lines.append("")
+            lines.append("> 这些文件的下载未完成，建议删除后重新下载。")
+            lines.append("> 使用 `--auto-cleanup` 选项可以自动清理这些文件。")
             lines.append("")
             for item in self.failed_downloads:
                 lines.append(f"- [ ] {item}")
@@ -162,12 +174,18 @@ class TodoList:
         if self.small_files:
             lines.append("## 📁 异常小文件（< 1KB）")
             lines.append("")
+            lines.append("> 这些文件大小异常，可能是下载失败或文件损坏。")
+            lines.append("> 建议检查文件内容，如无效则删除并重新下载。")
+            lines.append("")
             for item in self.small_files:
                 lines.append(f"- [ ] {item}")
             lines.append("")
         
         if self.corrupted_files:
             lines.append("## 🚨 损坏的PDF文件")
+            lines.append("")
+            lines.append("> 这些PDF文件的头部信息无效，文件可能已损坏。")
+            lines.append("> 建议删除并从原始来源重新下载。")
             lines.append("")
             for item in self.corrupted_files:
                 lines.append(f"- [ ] {item}")
@@ -191,11 +209,22 @@ class TodoList:
         
         if not any([self.failed_downloads, self.small_files, 
                    self.corrupted_files, self.other_issues, other_items]):
-            lines.append("✅ 所有文件已检查完毕，无需处理的问题。")
+            lines.append("## ✅ 状态")
+            lines.append("")
+            lines.append("所有文件已检查完毕，未发现需要处理的问题。")
             lines.append("")
         
+        # Add helpful tips
         lines.append("---")
-        lines.append("*此文件由 ebook renamer 自动生成*")
+        lines.append("")
+        lines.append("### 💡 使用提示")
+        lines.append("")
+        lines.append("- 使用 `--auto-cleanup` 自动清理未完成下载和损坏文件")
+        lines.append("- 使用 `--delete-small` 同时删除异常小文件")
+        lines.append("- 使用 `--dry-run` 预览操作而不执行")
+        lines.append("")
+        lines.append("---")
+        lines.append("*此文件由 ebook-renamer 自动生成*")
         
         return '\n'.join(lines)
     

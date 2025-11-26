@@ -13,11 +13,11 @@ import (
 // Scanner handles file scanning operations
 type Scanner struct {
 	RootPath string
-	MaxDepth int
+	MaxDepth uint
 }
 
 // New creates a new Scanner instance
-func New(path string, maxDepth int) (*Scanner, error) {
+func New(path string, maxDepth uint) (*Scanner, error) {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return nil, err
@@ -52,10 +52,11 @@ func (s *Scanner) Scan() ([]*types.FileInfo, error) {
 		if err != nil {
 			return nil
 		}
-		depth := len(strings.Split(relPath, string(os.PathSeparator)))
+		depthInt := len(strings.Split(relPath, string(os.PathSeparator)))
 		if relPath == "." {
-			depth = 0
+			depthInt = 0
 		}
+		depth := uint(depthInt)
 
 		if depth > s.MaxDepth {
 			if info.IsDir() {

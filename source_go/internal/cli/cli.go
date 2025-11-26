@@ -31,6 +31,7 @@ var (
 	fetchArxivFlag      bool
 	verboseFlag         bool
 	deleteSmallFlag     bool
+	autoCleanupFlag     bool
 	jsonFlag            bool
 )
 
@@ -61,6 +62,7 @@ func init() {
 	rootCmd.Flags().BoolVar(&fetchArxivFlag, "fetch-arxiv", false, "Fetch arXiv metadata via API (not implemented yet)")
 	rootCmd.Flags().BoolVarP(&verboseFlag, "verbose", "v", false, "Enable verbose logging")
 	rootCmd.Flags().BoolVar(&deleteSmallFlag, "delete-small", false, "Delete small/corrupted files (< 1KB) instead of adding to todo list")
+	rootCmd.Flags().BoolVar(&autoCleanupFlag, "auto-cleanup", false, "Automatically clean up incomplete downloads (.download/.crdownload) and corrupted files")
 	rootCmd.Flags().BoolVar(&jsonFlag, "json", false, "Output operations in JSON format instead of human-readable text")
 }
 
@@ -139,6 +141,7 @@ func runEbookRenamer(cmd *cobra.Command, args []string) error {
 		FetchArxiv:      fetchArxivFlag,
 		Verbose:         verboseFlag,
 		DeleteSmall:     deleteSmallFlag,
+		AutoCleanup:     autoCleanupFlag,
 		Json:            jsonFlag,
 	}
 
@@ -157,7 +160,7 @@ func nilString(s string) *string {
 
 func processFiles(config *types.Config) error {
 	// Create scanner
-	s, err := scanner.New(config.Path, int(config.MaxDepth))
+	s, err := scanner.New(config.Path, config.MaxDepth)
 	if err != nil {
 		return fmt.Errorf("failed to create scanner: %w", err)
 	}
@@ -185,33 +188,122 @@ func processFiles(config *types.Config) error {
 		return fmt.Errorf("todo list creation failed: %w", err)
 	}
 
-	// Handle failed downloads and small files
-	var filesToDelete []string
-	var todoItems []types.TodoItem
+	// Categorize problematic files
+	var incompleteDownloads []*types.FileInfo // .download, .crdownload files
+	var corruptedFiles []*types.FileInfo      // Corrupted PDFs
+	var smallFiles []*types.FileInfo          // Files that are too small (< 1KB)
 
 	for _, fileInfo := range normalized {
-		if fileInfo.IsFailedDownload || fileInfo.IsTooSmall {
-			if config.DeleteSmall {
-				filesToDelete = append(filesToDelete, fileInfo.OriginalPath)
-				todoList.RemoveFileFromTodo(fileInfo.OriginalName)
-			} else {
-				if fileInfo.IsFailedDownload {
-					todoList.AddFailedDownload(fileInfo)
-					todoItems = append(todoItems, types.TodoItem{
-						Category: "failed_download",
-						File:     fileInfo.OriginalName,
-						Message:  fmt.Sprintf("重新下载: %s (未完成下载)", fileInfo.OriginalName),
-					})
-				} else {
-					todoList.AddFailedDownload(fileInfo)
-					todoItems = append(todoItems, types.TodoItem{
-						Category: "too_small",
-						File:     fileInfo.OriginalName,
-						Message:  fmt.Sprintf("检查并重新下载: %s (文件过小，仅 %d 字节)", fileInfo.OriginalName, fileInfo.Size),
-					})
+		if fileInfo.IsFailedDownload {
+			incompleteDownloads = append(incompleteDownloads, fileInfo)
+		} else if fileInfo.IsTooSmall {
+			smallFiles = append(smallFiles, fileInfo)
+		} else {
+			// Check for PDF corruption
+			if strings.ToLower(fileInfo.Extension) == ".pdf" {
+				if err := validatePDFHeader(fileInfo.OriginalPath); err != nil {
+					corruptedFiles = append(corruptedFiles, fileInfo)
 				}
 			}
+		}
+	}
+
+	// Print summary of found issues
+	if !config.Json {
+		printIssueSummary(incompleteDownloads, corruptedFiles, smallFiles)
+	}
+
+	// Determine cleanup behavior based on flags
+	shouldCleanup := config.AutoCleanup || config.DeleteSmall
+
+	// Track files to delete and todo items
+	var filesToDelete []string
+	var todoItems []types.TodoItem
+	cleanupResult := &types.CleanupResult{
+		DeletedIncomplete: []string{},
+		DeletedCorrupted:  []string{},
+		DeletedSmall:      []string{},
+		FailedDeletions:   []types.FailedDeletion{},
+	}
+
+	// Process incomplete downloads
+	for _, fileInfo := range incompleteDownloads {
+		if shouldCleanup {
+			filesToDelete = append(filesToDelete, fileInfo.OriginalPath)
+			cleanupResult.DeletedIncomplete = append(cleanupResult.DeletedIncomplete, fileInfo.OriginalPath)
+			todoList.RemoveFileFromTodo(fileInfo.OriginalName)
 		} else {
+			todoList.AddFailedDownload(fileInfo)
+			todoItems = append(todoItems, types.TodoItem{
+				Category: "failed_download",
+				File:     fileInfo.OriginalName,
+				Message:  fmt.Sprintf("重新下载: %s (未完成下载)", fileInfo.OriginalName),
+			})
+		}
+	}
+
+	// Process corrupted files
+	for _, fileInfo := range corruptedFiles {
+		if shouldCleanup {
+			filesToDelete = append(filesToDelete, fileInfo.OriginalPath)
+			cleanupResult.DeletedCorrupted = append(cleanupResult.DeletedCorrupted, fileInfo.OriginalPath)
+			todoList.RemoveFileFromTodo(fileInfo.OriginalName)
+		} else {
+			todoList.AddFileIssue(fileInfo, types.FileIssueCorruptedPdf)
+			todoItems = append(todoItems, types.TodoItem{
+				Category: "corrupted",
+				File:     fileInfo.OriginalName,
+				Message:  fmt.Sprintf("重新下载: %s (PDF文件损坏)", fileInfo.OriginalName),
+			})
+		}
+	}
+
+	// Process small files
+	for _, fileInfo := range smallFiles {
+		if config.DeleteSmall {
+			filesToDelete = append(filesToDelete, fileInfo.OriginalPath)
+			cleanupResult.DeletedSmall = append(cleanupResult.DeletedSmall, fileInfo.OriginalPath)
+			todoList.RemoveFileFromTodo(fileInfo.OriginalName)
+		} else if config.AutoCleanup {
+			// Auto-cleanup mode: add to todo for manual review (might be valid small ebook)
+			todoList.AddFailedDownload(fileInfo)
+			todoItems = append(todoItems, types.TodoItem{
+				Category: "too_small",
+				File:     fileInfo.OriginalName,
+				Message:  fmt.Sprintf("检查文件: %s (文件过小 %d 字节，可能需要重新下载)", fileInfo.OriginalName, fileInfo.Size),
+			})
+		} else {
+			todoList.AddFailedDownload(fileInfo)
+			todoItems = append(todoItems, types.TodoItem{
+				Category: "too_small",
+				File:     fileInfo.OriginalName,
+				Message:  fmt.Sprintf("检查并重新下载: %s (文件过小，仅 %d 字节)", fileInfo.OriginalName, fileInfo.Size),
+			})
+		}
+	}
+
+	// Analyze other files for integrity
+	for _, fileInfo := range normalized {
+		isProblematic := false
+		for _, f := range incompleteDownloads {
+			if f == fileInfo {
+				isProblematic = true
+				break
+			}
+		}
+		for _, f := range corruptedFiles {
+			if f == fileInfo {
+				isProblematic = true
+				break
+			}
+		}
+		for _, f := range smallFiles {
+			if f == fileInfo {
+				isProblematic = true
+				break
+			}
+		}
+		if !isProblematic {
 			todoList.AnalyzeFileIntegrity(fileInfo)
 		}
 	}
@@ -259,8 +351,14 @@ func processFiles(config *types.Config) error {
 		}
 	} else {
 		// Execute operations
-		if err := executeOperations(cleanFiles, duplicateGroups, filesToDelete, todoList, config); err != nil {
+		cleanupResult, err = executeOperations(cleanFiles, duplicateGroups, filesToDelete, todoList, config, cleanupResult)
+		if err != nil {
 			return fmt.Errorf("execution failed: %w", err)
+		}
+
+		// Print cleanup summary
+		if !config.Json {
+			printCleanupSummary(cleanupResult)
 		}
 	}
 
@@ -269,6 +367,109 @@ func processFiles(config *types.Config) error {
 	}
 
 	return nil
+}
+
+// validatePDFHeader validates that a PDF file has the correct header
+func validatePDFHeader(filePath string) error {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	header := make([]byte, 5)
+	_, err = file.Read(header)
+	if err != nil {
+		return err
+	}
+
+	if string(header) != "%PDF-" {
+		return fmt.Errorf("invalid PDF header")
+	}
+
+	return nil
+}
+
+func printIssueSummary(incomplete, corrupted, small []*types.FileInfo) {
+	totalIssues := len(incomplete) + len(corrupted) + len(small)
+
+	if totalIssues == 0 {
+		fmt.Println("\n📋 文件扫描完成，未发现问题文件")
+		return
+	}
+
+	fmt.Printf("\n📋 发现 %d 个问题文件:\n", totalIssues)
+	fmt.Println("----------------------------------------")
+
+	if len(incomplete) > 0 {
+		fmt.Printf("  🔄 未完成下载: %d 个\n", len(incomplete))
+		for i, f := range incomplete {
+			if i >= 3 {
+				fmt.Printf("     ... 及其他 %d 个文件\n", len(incomplete)-3)
+				break
+			}
+			fmt.Printf("     • %s\n", f.OriginalName)
+		}
+	}
+
+	if len(corrupted) > 0 {
+		fmt.Printf("  🚨 损坏文件: %d 个\n", len(corrupted))
+		for i, f := range corrupted {
+			if i >= 3 {
+				fmt.Printf("     ... 及其他 %d 个文件\n", len(corrupted)-3)
+				break
+			}
+			fmt.Printf("     • %s\n", f.OriginalName)
+		}
+	}
+
+	if len(small) > 0 {
+		fmt.Printf("  📁 异常小文件: %d 个\n", len(small))
+		for i, f := range small {
+			if i >= 3 {
+				fmt.Printf("     ... 及其他 %d 个文件\n", len(small)-3)
+				break
+			}
+			fmt.Printf("     • %s (%d 字节)\n", f.OriginalName, f.Size)
+		}
+	}
+
+	fmt.Println("----------------------------------------")
+}
+
+func printCleanupSummary(result *types.CleanupResult) {
+	totalDeleted := len(result.DeletedIncomplete) + len(result.DeletedCorrupted) + len(result.DeletedSmall)
+
+	if totalDeleted == 0 && len(result.FailedDeletions) == 0 {
+		return
+	}
+
+	fmt.Println("\n🧹 清理完成:")
+	fmt.Println("----------------------------------------")
+
+	if len(result.DeletedIncomplete) > 0 {
+		fmt.Printf("  ✓ 删除未完成下载: %d 个\n", len(result.DeletedIncomplete))
+	}
+
+	if len(result.DeletedCorrupted) > 0 {
+		fmt.Printf("  ✓ 删除损坏文件: %d 个\n", len(result.DeletedCorrupted))
+	}
+
+	if len(result.DeletedSmall) > 0 {
+		fmt.Printf("  ✓ 删除异常小文件: %d 个\n", len(result.DeletedSmall))
+	}
+
+	if len(result.FailedDeletions) > 0 {
+		fmt.Printf("  ⚠️  删除失败: %d 个\n", len(result.FailedDeletions))
+		for i, fd := range result.FailedDeletions {
+			if i >= 3 {
+				break
+			}
+			fmt.Printf("     • %s: %s\n", filepath.Base(fd.Path), fd.Error)
+		}
+	}
+
+	fmt.Println("----------------------------------------")
 }
 
 func determineTodoFile(targetDir string, customPath *string) string {
@@ -320,12 +521,12 @@ func printHumanOutput(cleanFiles []*types.FileInfo, duplicateGroups [][]string, 
 	}
 }
 
-func executeOperations(cleanFiles []*types.FileInfo, duplicateGroups [][]string, filesToDelete []string, todoList *todo.TodoList, config *types.Config) error {
+func executeOperations(cleanFiles []*types.FileInfo, duplicateGroups [][]string, filesToDelete []string, todoList *todo.TodoList, config *types.Config, cleanupResult *types.CleanupResult) (*types.CleanupResult, error) {
 	// Execute renames
 	for _, fileInfo := range cleanFiles {
 		if fileInfo.NewName != nil {
 			if err := os.Rename(fileInfo.OriginalPath, fileInfo.NewPath); err != nil {
-				return fmt.Errorf("rename failed: %w", err)
+				return cleanupResult, fmt.Errorf("rename failed: %w", err)
 			}
 			log.Printf("Renamed: %s -> %s", fileInfo.OriginalName, *fileInfo.NewName)
 		}
@@ -338,32 +539,50 @@ func executeOperations(cleanFiles []*types.FileInfo, duplicateGroups [][]string,
 				for i, path := range group {
 					if i > 0 {
 						if err := os.Remove(path); err != nil {
-							return fmt.Errorf("delete duplicate failed: %w", err)
+							log.Printf("Failed to delete duplicate: %s: %v", path, err)
+						} else {
+							log.Printf("Deleted duplicate: %s", path)
 						}
-						log.Printf("Deleted duplicate: %s", path)
 					}
 				}
 			}
 		}
 	}
 
-	// Delete small/corrupted files
-	if config.DeleteSmall && len(filesToDelete) > 0 {
-		fmt.Printf("\nDeleting %d small/corrupted files...\n", len(filesToDelete))
+	// Delete problematic files (incomplete downloads, corrupted, small)
+	if len(filesToDelete) > 0 {
 		for _, path := range filesToDelete {
 			if err := os.Remove(path); err != nil {
-				return fmt.Errorf("delete small file failed: %w", err)
+				log.Printf("Failed to delete file: %s: %v", path, err)
+				cleanupResult.FailedDeletions = append(cleanupResult.FailedDeletions, types.FailedDeletion{
+					Path:  path,
+					Error: err.Error(),
+				})
+				// Remove from the deleted lists if deletion failed
+				cleanupResult.DeletedIncomplete = removeFromSlice(cleanupResult.DeletedIncomplete, path)
+				cleanupResult.DeletedCorrupted = removeFromSlice(cleanupResult.DeletedCorrupted, path)
+				cleanupResult.DeletedSmall = removeFromSlice(cleanupResult.DeletedSmall, path)
+			} else {
+				log.Printf("Deleted problematic file: %s", path)
 			}
-			log.Printf("Deleted small/corrupted file: %s", path)
-			fmt.Printf("  Deleted: %s\n", path)
 		}
 	}
 
 	// Write todo.md
 	if err := todoList.Write(); err != nil {
-		return err
+		return cleanupResult, err
 	}
 	log.Printf("Wrote todo.md")
 
-	return nil
+	return cleanupResult, nil
+}
+
+func removeFromSlice(slice []string, item string) []string {
+	result := make([]string, 0, len(slice))
+	for _, s := range slice {
+		if s != item {
+			result = append(result, s)
+		}
+	}
+	return result
 }

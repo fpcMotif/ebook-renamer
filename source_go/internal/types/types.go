@@ -70,17 +70,32 @@ const (
 
 // Config holds the application configuration
 type Config struct {
-	Path              string
-	DryRun            bool
-	MaxDepth          uint
-	NoRecursive       bool
-	Extensions        []string
-	NoDelete          bool
-	TodoFile          *string
-	LogFile           *string
-	PreserveUnicode   bool
-	FetchArxiv        bool
-	Verbose           bool
-	DeleteSmall       bool
-	Json              bool
+	Path            string
+	DryRun          bool
+	MaxDepth        uint
+	NoRecursive     bool
+	Extensions      []string
+	NoDelete        bool
+	TodoFile        *string
+	LogFile         *string
+	PreserveUnicode bool
+	FetchArxiv      bool
+	Verbose         bool
+	DeleteSmall     bool
+	AutoCleanup     bool
+	Json            bool
+}
+
+// CleanupResult holds the result of cleanup operations
+type CleanupResult struct {
+	DeletedIncomplete []string
+	DeletedCorrupted  []string
+	DeletedSmall      []string
+	FailedDeletions   []FailedDeletion
+}
+
+// FailedDeletion represents a failed file deletion
+type FailedDeletion struct {
+	Path  string
+	Error string
 }

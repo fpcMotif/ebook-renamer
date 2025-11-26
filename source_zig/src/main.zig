@@ -9,6 +9,10 @@ pub fn main() !void {
     const timestamp = std.time.timestamp();
     std.debug.print("[{d}] INFO: Starting ebook renamer\n", .{timestamp});
 
+    const tui = @import("tui.zig");
+    var ui = tui.Tui.init();
+    try ui.printTitle();
+
     // Parse command line arguments
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
@@ -16,22 +20,22 @@ pub fn main() !void {
     // Default path is current directory
     const path = if (args.len > 1) args[1] else ".";
     
-    std.debug.print("[{d}] INFO: Processing path: {s}\n", .{timestamp, path});
+    // Simulate steps
+    try ui.startStep("Scanning");
+    std.time.sleep(500 * std.time.ns_per_ms);
+    try ui.finishStep("Scanning", "Found 0 files (Placeholder)");
 
-    // For now, this is a minimal implementation showing the structure
-    // Full implementation would include:
-    // - CLI argument parsing (--dry-run, --max-depth, etc.)
-    // - File scanning with recursion
-    // - Filename normalization
-    // - Duplicate detection
-    // - Todo list generation
-    
-    std.debug.print("Zig implementation - work in progress\n", .{});
-    std.debug.print("This is a placeholder showing the logging structure\n", .{});
-    std.debug.print("Full implementation requires:\n", .{});
-    std.debug.print("  - CLI parsing module\n", .{});
-    std.debug.print("  - Scanner module\n", .{});
-    std.debug.print("  - Normalizer module\n", .{});
-    std.debug.print("  - Duplicates module\n", .{});
-    std.debug.print("  - Todo module\n", .{});
+    try ui.startStep("Normalizing");
+    std.time.sleep(500 * std.time.ns_per_ms);
+    try ui.finishStep("Normalizing", "Normalized 0 files (Placeholder)");
+
+    try ui.startStep("Checking Integrity");
+    std.time.sleep(500 * std.time.ns_per_ms);
+    try ui.finishStep("Checking Integrity", "Check complete");
+
+    try ui.startStep("Detecting Duplicates");
+    std.time.sleep(500 * std.time.ns_per_ms);
+    try ui.finishStep("Detecting Duplicates", "Detected 0 duplicate groups");
+
+    std.debug.print("\nZig implementation is currently a placeholder.\n", .{});
 }

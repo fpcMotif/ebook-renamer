@@ -14,7 +14,9 @@ from .scanner import Scanner
 from .normalizer import Normalizer
 from .duplicates import DuplicateDetector
 from .todo import TodoList
+from .todo import TodoList
 from .jsonoutput import JSONOutput
+from .tui import run_tui, RICH_AVAILABLE
 
 
 def create_parser() -> argparse.ArgumentParser:
@@ -180,6 +182,10 @@ def main() -> int:
     try:
         config = parse_args()
         logging.info(f"Starting ebook renamer with config: {config}")
+        
+        if not config.json and RICH_AVAILABLE:
+            return run_tui(config)
+
         return process_files(config)
     except KeyboardInterrupt:
         print("\nOperation cancelled by user", file=sys.stderr)

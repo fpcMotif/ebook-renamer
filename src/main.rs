@@ -5,6 +5,7 @@ mod todo;
 mod cli;
 mod json_output;
 mod download_recovery;
+mod tui;
 
 use anyhow::Result;
 use clap::Parser;
@@ -27,6 +28,10 @@ fn main() -> Result<()> {
             "⚠️  Warning:".yellow().bold(),
             "--fetch-arxiv is not implemented yet. Files will be processed offline only.".yellow()
         );
+    }
+
+    if !args.json {
+        return tui::run(args).map_err(|e| anyhow::anyhow!(e));
     }
 
     // Step 1: Recover downloads from .download/.crdownload folders

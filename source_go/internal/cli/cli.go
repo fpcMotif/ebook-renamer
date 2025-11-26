@@ -14,7 +14,9 @@ import (
 	"github.com/ebook-renamer/go/internal/normalizer"
 	"github.com/ebook-renamer/go/internal/scanner"
 	"github.com/ebook-renamer/go/internal/todo"
+	"github.com/ebook-renamer/go/internal/tui"
 	"github.com/ebook-renamer/go/internal/types"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 )
 
@@ -147,8 +149,16 @@ func runEbookRenamer(cmd *cobra.Command, args []string) error {
 
 	log.Printf("Starting ebook renamer with config: %+v", config)
 
-	// Process files
-	return processFiles(config)
+	if config.Json {
+		return processFiles(config)
+	}
+
+	// Run TUI
+	p := tea.NewProgram(tui.NewModel(config))
+	if _, err := p.Run(); err != nil {
+		return fmt.Errorf("error running program: %w", err)
+	}
+	return nil
 }
 
 func nilString(s string) *string {

@@ -96,6 +96,13 @@ pub struct Args {
     )]
     pub delete_small: bool,
 
+    /// Clean up failed/broken downloads after logging them to todo.md
+    #[arg(
+        long,
+        help = "Delete failed/broken downloads and small files after logging them to todo.md"
+    )]
+    pub clean_failed: bool,
+
     /// Output results in JSON format (for testing)
     #[arg(
         long,
@@ -154,6 +161,7 @@ mod tests {
             fetch_arxiv: false,
             verbose: false,
             delete_small: false,
+            clean_failed: false,
             json: false,
             skip_cloud_hash: false,
             cleanup_downloads: false,
@@ -181,6 +189,7 @@ mod tests {
             fetch_arxiv: false,
             verbose: false,
             delete_small: false,
+            clean_failed: false,
             json: false,
             skip_cloud_hash: false,
             cleanup_downloads: false,
@@ -207,6 +216,7 @@ mod tests {
             fetch_arxiv: false,
             verbose: false,
             delete_small: false,
+            clean_failed: false,
             json: false,
             skip_cloud_hash: false,
             cleanup_downloads: false,

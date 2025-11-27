@@ -44,30 +44,16 @@ func TestCleanUnderscores(t *testing.T) {
 
 func TestCleanOrphanedBrackets(t *testing.T) {
 	result := cleanOrphanedBrackets("Title ) with ( orphaned ) brackets [")
-	// Orphaned closing should be removed, opening at end removed
-	// "Title ) with ( orphaned ) brackets [" -> "Title  with ( orphaned  brackets"
-	// Wait, logic in Go:
-	// ) -> if openParens > 0 { ... } else skip
-	// ( -> openParens++
-	// So "Title " (skip )) "with (" (open=1) " orphaned " (skip )) " brackets " (skip [ as it is at end?)
-	// The Go implementation:
-	// case '[': openBrackets++; result.WriteRune(r)
-	// Then at end: for strings.HasSuffix(..., "[") { remove }
-
-	// Let's trace "Title ) with ( orphaned ) brackets ["
-	// ) -> skipped
-	// ( -> kept, open=1
-	// ) -> kept, open=0
-	// [ -> kept, open=1
-	// Result so far: "Title  with ( orphaned ) brackets ["
-	// Then remove trailing [: "Title  with ( orphaned ) brackets "
-	// TrimSpace -> "Title  with ( orphaned ) brackets"
-	// Wait, my manual trace might be slightly off on spaces, but let's see.
-	// The Rust test expects: "Title  with ( orphaned ) brackets" (roughly)
-	// Actually Rust test just checks counts.
-
-	// Let's just assert that it doesn't have orphaned closing brackets
-	assert.NotContains(t, result, " ) ")
+	// "Title ) with ( orphaned ) brackets ["
+	// 1. ')' at index 6: openParens=0. Skipped.
+	// 2. '(' at index 13: openParens=1. Kept.
+	// 3. ')' at index 24: openParens=1. openParens becomes 0. Kept.
+	// 4. '[' at end: openBrackets=1. Kept.
+	// Result string before suffix trim: "Title  with ( orphaned ) brackets ["
+	// Suffix loop removes '['.
+	// TrimSpace.
+	// Expected: "Title  with ( orphaned ) brackets"
+	assert.Equal(t, "Title  with ( orphaned ) brackets", result)
 }
 
 func TestParseAuthorBeforeTitleWithPublisher(t *testing.T) {

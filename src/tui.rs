@@ -224,10 +224,107 @@ fn ui(f: &mut ratatui::Frame, app: &App) {
     let logs: Vec<ListItem> = app.logs
         .iter()
         .rev()
-        .map(|m| ListItem::new(Line::from(vec![Span::raw(m)])))
+        .map(|m| {
+            let style = if m.starts_with("Error") {
+                Style::default().fg(Color::Red)
+            } else if m.starts_with("Done") {
+                Style::default().fg(Color::Green)
+            } else {
+                Style::default()
+            };
+            ListItem::new(Line::from(vec![Span::styled(m, style)]))
+        })
         .collect();
     
     let logs_list = List::new(logs)
         .block(Block::default().borders(Borders::ALL).title("Logs"));
     f.render_widget(logs_list, chunks[2]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    use ratatui::buffer::Buffer;
+
+    #[test]
+    fn test_ui_render_rich_text() {
+        // 1. Setup App state
+        let mut app = App::new();
+        app.logs.push("Starting...".to_string());
+        app.logs.push("Error: Something failed".to_string());
+        app.logs.push("Done!".to_string());
+        app.progress = 1.0;
+
+        // 2. Setup Test Backend (increased height to ensure list items fit)
+        let backend = TestBackend::new(40, 15);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        // 3. Render
+        terminal.draw(|f| ui(f, &app)).unwrap();
+
+        // 4. Assertions
+        let buffer = terminal.backend().buffer();
+
+        // Debug output for failing tests
+        println!("Buffer content:");
+        for y in 0..buffer.area.height {
+            let line_str = (0..buffer.area.width)
+                .map(|x| buffer.get(x, y).symbol())
+                .collect::<String>();
+            println!("{:2}: {}", y, line_str);
+        }
+
+        // Check for "Status" block title
+        assert_area_contains_str(buffer, "Status");
+
+        // Check for "Progress" block title
+        assert_area_contains_str(buffer, "Progress");
+
+        // Check for Logs
+        // Note: logs are reversed in the UI code
+        // Line 0: "Done!" (Green)
+        // Line 1: "Error: Something failed" (Red)
+        // Line 2: "Starting..." (Default)
+
+        // Find the "Logs" area. Since layout is vertical chunks[2].
+        // We look for the strings in the buffer and check their style.
+
+        assert_line_style(buffer, "Done!", Color::Green);
+        assert_line_style(buffer, "Error: Something failed", Color::Red);
+        assert_line_style(buffer, "Starting...", Color::Reset);
+    }
+
+    fn assert_area_contains_str(buffer: &Buffer, s: &str) {
+        let mut found = false;
+        for y in 0..buffer.area.height {
+            let line_str = (0..buffer.area.width)
+                .map(|x| buffer.get(x, y).symbol())
+                .collect::<String>();
+            if line_str.contains(s) {
+                found = true;
+                break;
+            }
+        }
+        assert!(found, "Buffer does not contain '{}'", s);
+    }
+
+    fn assert_line_style(buffer: &Buffer, text: &str, expected_fg: Color) {
+        // This is a simplified search. It finds the text and checks the style of the first char.
+        let mut found = false;
+        for y in 0..buffer.area.height {
+            let line_len = buffer.area.width;
+            let line_cells: Vec<_> = (0..line_len).map(|x| buffer.get(x, y)).collect();
+            let line_str: String = line_cells.iter().map(|c| c.symbol()).collect();
+
+            if let Some(idx) = line_str.find(text) {
+                let cell = line_cells[idx];
+                assert_eq!(cell.fg, expected_fg, "Text '{}' at y={} has wrong color. Expected {:?}, got {:?}", text, y, expected_fg, cell.fg);
+                found = true;
+                break;
+            }
+        }
+        assert!(found, "Buffer does not contain text '{}'", text);
+    }
 }

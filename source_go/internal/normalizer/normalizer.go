@@ -128,13 +128,13 @@ func removeSeriesPrefixes(s string) string {
 func cleanNoiseSources(s string) string {
 	patterns := []string{
 		// Z-Library variants
-		`\s*[-\(]?\s*[zZ]-?Library\s*[)\.]?`,
-		`\s*\([zZ]-?Library\)`,
-		`\s*-\s*[zZ]-?Library`,
+		`\s*[-\(]?\s*[zZ]-?Library(?:\.pdf)?\s*[)\.]?`,
+		`\s*\([zZ]-?Library(?:\.pdf)?\)`,
+		`\s*-\s*[zZ]-?Library(?:\.pdf)?`,
 		// libgen variants
-		`\s*[-\(]?\s*libgen(?:\.li)?\s*[)\.]?`,
-		`\s*\(libgen(?:\.li)?\)`,
-		`\s*-\s*libgen(?:\.li)?`,
+		`\s*[-\(]?\s*libgen(?:\.li)?(?:\.pdf)?\s*[)\.]?`,
+		`\s*\(libgen(?:\.li)?(?:\.pdf)?\)`,
+		`\s*-\s*libgen(?:\.li)?(?:\.pdf)?`,
 		// Anna's Archive variants
 		`Anna'?s?\s*Archive`,
 		`\s*[-\(]?\s*Anna'?s?\s+Archive\s*[)\.]?`,
@@ -362,6 +362,9 @@ func cleanAuthorName(s string) string {
 func cleanTitle(s string) string {
 	s = strings.TrimSpace(s)
 
+	// Clean noise sources first
+	s = cleanNoiseSources(s)
+
 	// Remove (auth.)
 	s = trailingAuthRegex.ReplaceAllString(s, "")
 
@@ -433,7 +436,9 @@ func cleanOrphanedBrackets(s string) string {
 			if openParens > 0 {
 				openParens--
 				result.WriteRune(r)
-			}
+			} else {
+                // If no open paren, we skip this closing paren
+            }
 		case '[':
 			openBrackets++
 			result.WriteRune(r)

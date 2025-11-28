@@ -52,8 +52,9 @@ func TestCleanOrphanedBrackets(t *testing.T) {
 	// Result string before suffix trim: "Title  with ( orphaned ) brackets ["
 	// Suffix loop removes '['.
 	// TrimSpace.
-	// Expected: "Title  with ( orphaned ) brackets"
-	assert.Equal(t, "Title  with ( orphaned ) brackets", result)
+	// Space regex cleaning.
+	// Expected: "Title with ( orphaned ) brackets"
+	assert.Equal(t, "Title with ( orphaned ) brackets", result)
 }
 
 func TestParseAuthorBeforeTitleWithPublisher(t *testing.T) {

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode"
@@ -49,14 +50,6 @@ func NormalizeFiles(files []*types.FileInfo) ([]*types.FileInfo, error) {
 		}
 
 		newName := generateNewFilename(metadata, file.Extension)
-
-		// Update file info
-		// We need to create a copy or modify the pointer if it's mutable.
-		// Since we are returning a new slice of pointers, we can just modify the struct if we own it,
-		// or create a new one. FileInfo is a struct pointer in the input slice?
-		// The input is []*types.FileInfo.
-		// Let's modify it in place or create a copy.
-		// Rust implementation modifies in place.
 
 		file.NewName = &newName
 		file.NewPath = filepathJoin(filepath.Dir(file.OriginalPath), newName)
@@ -122,6 +115,26 @@ func removeSeriesPrefixes(s string) string {
 			break
 		}
 	}
+
+	// Generic pattern: (Series Name) Author - Title
+	reGeneric := regexp.MustCompile(`^\s*\(([^)]+)\)\s+(.+)$`)
+	if matches := reGeneric.FindStringSubmatch(result); matches != nil {
+		restPart := matches[2]
+		// Check if 'restPart' starts with an author
+		reSep := regexp.MustCompile(`(?:--|[-:])`)
+		loc := reSep.FindStringIndex(restPart)
+		var potentialAuthor string
+		if loc != nil {
+			potentialAuthor = restPart[:loc[0]]
+		} else {
+			potentialAuthor = restPart
+		}
+
+		if isLikelyAuthor(potentialAuthor) {
+			result = restPart
+		}
+	}
+
 	return strings.TrimSpace(result)
 }
 
@@ -145,6 +158,14 @@ func cleanNoiseSources(s string) string {
 		`\s*--\s*\d{10,13}\s*(?:--)?`,
 		`\s*--\s*[A-Za-z0-9]{16,}\s*(?:--)?`,
 		`\s*--\s*[a-f0-9]{8,}\s*(?:--)?`,
+		// "Uploaded by"
+		`\s*[-\(]?\s*[Uu]ploaded by\s+[^)\-]+[)\.]?`,
+		`\s*-\s*[Uu]ploaded by\s+[^)\-]+`,
+		// "Via ..."
+		`\s*[-\(]?\s*[Vv]ia\s+[^)\-]+[)\.]?`,
+		// Website URLs
+		`\s*[-\(]?\s*w{3}\.[a-zA-Z0-9-]+\.[a-z]{2,}\s*[)\.]?`,
+		`\s*[-\(]?\s*[a-zA-Z0-9-]+\.(?:com|org|net|edu|io)\s*[)\.]?`,
 	}
 
 	result := s
@@ -371,6 +392,22 @@ func cleanTitle(s string) string {
 	// Strip trailing ID-like noise
 	s = trailingIDRegex.ReplaceAllString(s, "")
 
+	// Remove trailing publisher info separated by dash
+	if idx := strings.LastIndex(s, " - "); idx != -1 {
+		suffix := s[idx+3:]
+		if isPublisherOrSeriesInfo(suffix) {
+			s = s[:idx]
+		}
+	}
+
+	// Handle just "-" without spaces if it looks like publisher
+	if idx := strings.LastIndex(s, "-"); idx > 0 && idx < len(s)-1 {
+		suffix := strings.TrimSpace(s[idx+1:])
+		if isStrictPublisherInfo(suffix) {
+			s = s[:idx]
+		}
+	}
+
 	// Clean orphaned brackets
 	s = cleanOrphanedBrackets(s)
 
@@ -422,44 +459,70 @@ func isPublisherOrSeriesInfo(s string) bool {
 	return false
 }
 
+func isStrictPublisherInfo(s string) bool {
+	strictKeywords := []string{
+		"Press", "Publishing", "Springer", "Cambridge", "Oxford", "MIT", "Wiley", "Elsevier",
+		"Routledge", "Pearson", "McGraw", "Addison", "Prentice", "O'Reilly", "Princeton",
+		"Harvard", "Yale", "Stanford", "Chicago", "California", "Columbia", "University",
+		"Verlag", "Birkhäuser", "CUP",
+	}
+	for _, k := range strictKeywords {
+		if strings.Contains(s, k) {
+			return true
+		}
+	}
+	return false
+}
+
 func cleanOrphanedBrackets(s string) string {
-	var result strings.Builder
-	openParens := 0
-	openBrackets := 0
+	var result []rune
+	// We need to remove unclosed OPEN brackets.
+	// Since we build the string iteratively, we can track the indices of open brackets *in the result*.
+
+	openParensIndices := []int{}
+	openBracketsIndices := []int{}
 
 	for _, r := range s {
 		switch r {
 		case '(':
-			openParens++
-			result.WriteRune(r)
+			openParensIndices = append(openParensIndices, len(result))
+			result = append(result, r)
 		case ')':
-			if openParens > 0 {
-				openParens--
-				result.WriteRune(r)
+			if len(openParensIndices) > 0 {
+				openParensIndices = openParensIndices[:len(openParensIndices)-1]
+				result = append(result, r)
 			} else {
-                // If no open paren, we skip this closing paren
-            }
+				result = append(result, ' ')
+			}
 		case '[':
-			openBrackets++
-			result.WriteRune(r)
+			openBracketsIndices = append(openBracketsIndices, len(result))
+			result = append(result, r)
 		case ']':
-			if openBrackets > 0 {
-				openBrackets--
-				result.WriteRune(r)
+			if len(openBracketsIndices) > 0 {
+				openBracketsIndices = openBracketsIndices[:len(openBracketsIndices)-1]
+				result = append(result, r)
+			} else {
+				result = append(result, ' ')
 			}
 		case '_':
-			result.WriteRune(' ')
+			result = append(result, ' ')
 		default:
-			result.WriteRune(r)
+			result = append(result, r)
 		}
 	}
 
-	resultStr := result.String()
-	for strings.HasSuffix(resultStr, "(") || strings.HasSuffix(resultStr, "[") {
-		resultStr = resultStr[:len(resultStr)-1]
+	// Remove unclosed opening brackets
+	// Indices are in ascending order. We should remove from the end to keep indices valid.
+	indicesToRemove := append(openParensIndices, openBracketsIndices...)
+	sort.Sort(sort.Reverse(sort.IntSlice(indicesToRemove)))
+
+	for _, idx := range indicesToRemove {
+		if idx < len(result) {
+			result = append(result[:idx], result[idx+1:]...)
+		}
 	}
 
-	return strings.TrimSpace(resultStr)
+	return strings.TrimSpace(spaceRegex.ReplaceAllString(string(result), " "))
 }
 
 func generateNewFilename(metadata types.ParsedMetadata, extension string) string {

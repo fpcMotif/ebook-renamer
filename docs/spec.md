@@ -22,6 +22,7 @@ This document defines the canonical behavior for all ebook-renamer implementatio
 | `--verbose`, `-v` | `false` | Enable verbose logging (currently unused). |
 | `--delete-small` | `false` | Delete small/corrupted files (< 1KB) instead of adding to todo list. |
 | `--json` | `false` | Output operations in JSON format instead of human-readable text. |
+| `--skip-cloud-hash` | `false` | Skip MD5 hash computation for duplicate detection (auto-enabled for cloud storage paths). |
 
 ### Output Behavior
 - Human-readable mode: Prints operations to stdout with status messages
@@ -210,15 +211,49 @@ Only these extensions are considered for duplicate detection:
 - `.txt`
 - `.mobi` is **NOT** included (per user decision)
 
+### Detection Modes
+
+#### Standard Mode (Default)
+Uses MD5 hash-based duplicate detection:
+- Groups files by exact size first (optimization)
+- Computes MD5 hash for files with matching sizes
+- 100% accurate duplicate detection
+- **Caveat**: Reads file content, which may trigger downloads for cloud storage files
+
+#### Cloud Storage Mode (`--skip-cloud-hash`)
+Uses metadata-only duplicate detection:
+- **Auto-enabled** when cloud storage path is detected (Dropbox, Google Drive, OneDrive, macOS CloudStorage)
+- Groups files by exact size first (required match)
+- Within each size group, uses Jaro-Winkler similarity on filenames
+- Similarity threshold: **≥ 0.85 (85%)**
+- Uses normalized filename if available, otherwise original filename
+- **Benefits**: No file content reading, avoids triggering cloud downloads
+- **Limitations**: ~85% accuracy, may have false positives/negatives
+- **Recommendation**: Always use `--dry-run` to review before applying
+
+### Cloud Storage Path Detection
+Automatically detects these path patterns:
+- **Dropbox**: Contains `"Dropbox"` or `"Library/CloudStorage/Dropbox"` (macOS)
+- **Google Drive**: Contains `"Google Drive"`, `"GoogleDrive"`, or `"Library/CloudStorage/GoogleDrive"` (macOS)
+- **OneDrive**: Contains `"OneDrive"` or `"Library/CloudStorage/OneDrive"` (macOS)
+
+When detected, displays warning:
+```
+⚠️  Detected [Provider] storage. Using metadata-only mode to avoid downloading files.
+Duplicate detection based on filename similarity (≥85%) + exact size match.
+This is less accurate than content-based hashing. Review carefully!
+```
+
 ### Retention Priority
-When multiple files have identical MD5 hash:
+When multiple files have identical MD5 hash (or fuzzy match in cloud mode):
 1. **Files with `new_name` set** (already normalized) have priority
 2. **Shallowest path** (fewest directory components)
 3. **Newest modification time**
 
-### MD5 Calculation
+### MD5 Calculation (Standard Mode Only)
 - Stream-based reading with 8KB buffer
 - Applied only to non-failed, non-small files with allowed extensions
+- Skipped entirely in cloud storage mode
 
 ## 5. Todo List Generation
 

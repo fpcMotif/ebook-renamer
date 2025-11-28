@@ -4,6 +4,7 @@ use log::debug;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use strsim::jaro_winkler;
 
 // Allowed formats to keep
 const ALLOWED_EXTENSIONS: &[&str] = &[".pdf", ".epub", ".txt"];
@@ -22,17 +23,72 @@ pub fn detect_duplicates(files: Vec<FileInfo>, skip_hash: bool) -> Result<(Vec<V
     let mut hash_map: HashMap<String, Vec<FileInfo>> = HashMap::new();
 
     if skip_hash {
-        debug!("Skipping MD5 hash computation, using filename-based deduplication");
+        debug!("Skipping MD5 hash computation, using fuzzy filename matching + size comparison");
+
+        // Group by size first (exact size match required)
+        let mut size_groups: HashMap<u64, Vec<FileInfo>> = HashMap::new();
         for file_info in &filtered_files {
             if !file_info.is_failed_download && !file_info.is_too_small {
-                // Use new_name if available, otherwise original_name
-                let key = file_info.new_name.clone()
-                    .unwrap_or_else(|| file_info.original_name.clone());
-                
-                hash_map
-                    .entry(key)
+                size_groups
+                    .entry(file_info.size)
                     .or_insert_with(Vec::new)
                     .push(file_info.clone());
+            }
+        }
+
+        // Within each size group, use fuzzy matching
+        const SIMILARITY_THRESHOLD: f64 = 0.85;
+        let mut group_id = 0;
+
+        for (_size, files_with_same_size) in size_groups {
+            if files_with_same_size.len() < 2 {
+                // Only one file with this size, cannot be duplicate
+                continue;
+            }
+
+            // Compare all pairs within this size group
+            let mut already_grouped: Vec<usize> = Vec::new();
+
+            for i in 0..files_with_same_size.len() {
+                if already_grouped.contains(&i) {
+                    continue;
+                }
+
+                let mut current_group = vec![i];
+                let name_i = files_with_same_size[i].new_name.clone()
+                    .unwrap_or_else(|| files_with_same_size[i].original_name.clone());
+
+                for j in (i + 1)..files_with_same_size.len() {
+                    if already_grouped.contains(&j) {
+                        continue;
+                    }
+
+                    let name_j = files_with_same_size[j].new_name.clone()
+                        .unwrap_or_else(|| files_with_same_size[j].original_name.clone());
+
+                    let similarity = jaro_winkler(&name_i, &name_j);
+
+                    if similarity >= SIMILARITY_THRESHOLD {
+                        current_group.push(j);
+                        already_grouped.push(j);
+                        debug!("Fuzzy match: '{}' ~ '{}' (similarity: {:.2})", name_i, name_j, similarity);
+                    }
+                }
+
+                // If we found matches, add to hash_map
+                if current_group.len() > 1 {
+                    let group_key = format!("fuzzy_group_{}", group_id);
+                    group_id += 1;
+
+                    for idx in current_group {
+                        hash_map
+                            .entry(group_key.clone())
+                            .or_insert_with(Vec::new)
+                            .push(files_with_same_size[idx].clone());
+                    }
+                }
+
+                already_grouped.push(i);
             }
         }
     } else {

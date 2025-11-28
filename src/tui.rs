@@ -2,15 +2,15 @@ use anyhow::Result;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{
+    Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Gauge, List, ListItem, Paragraph},
-    Terminal,
 };
 use std::{
     io,
@@ -20,7 +20,7 @@ use std::{
 };
 
 use crate::cli::Args;
-use crate::{duplicates, normalizer, scanner, todo, download_recovery};
+use crate::{compute_cloud_mode, download_recovery, duplicates, normalizer, scanner, todo};
 
 #[derive(Debug, Clone)]
 pub enum AppEvent {
@@ -112,7 +112,8 @@ pub fn run(args: Args) -> Result<()> {
                         app.state = "Detecting Duplicates...".to_string();
                     }
                     AppEvent::DuplicatesComplete(groups) => {
-                        app.logs.push(format!("Detected {} duplicate groups", groups.len()));
+                        app.logs
+                            .push(format!("Detected {} duplicate groups", groups.len()));
                         app.progress = 0.8;
                         app.state = "Executing...".to_string();
                     }
@@ -130,9 +131,9 @@ pub fn run(args: Args) -> Result<()> {
             }
             last_tick = Instant::now();
         }
-        
+
         if app.done {
-             // Optional: auto-quit or wait for q
+            // Optional: auto-quit or wait for q
         }
     }
 
@@ -149,6 +150,8 @@ pub fn run(args: Args) -> Result<()> {
 }
 
 fn run_process(args: Args, tx: mpsc::Sender<AppEvent>) -> Result<()> {
+    let cloud_mode = compute_cloud_mode(&args);
+
     // 1. Recovery
     let recovery = download_recovery::DownloadRecovery::new(&args.path, args.cleanup_downloads);
     let _ = recovery.recover_downloads(); // Ignore errors for now or log them
@@ -168,13 +171,13 @@ fn run_process(args: Args, tx: mpsc::Sender<AppEvent>) -> Result<()> {
     // ... (Simplified logic for TUI demo, ideally copy full logic)
     for file_info in &normalized {
         if !file_info.is_failed_download && !file_info.is_too_small {
-             todo_list.analyze_file_integrity(file_info)?;
+            todo_list.analyze_file_integrity(file_info)?;
         }
     }
     tx.send(AppEvent::CheckComplete)?;
 
     // 5. Duplicates
-    let (duplicate_groups, clean_files) = duplicates::detect_duplicates(normalized, args.skip_cloud_hash)?;
+    let (duplicate_groups, clean_files) = duplicates::detect_duplicates(normalized, cloud_mode)?;
     tx.send(AppEvent::DuplicatesComplete(duplicate_groups.clone()))?;
 
     // 6. Execute
@@ -198,7 +201,7 @@ fn run_process(args: Args, tx: mpsc::Sender<AppEvent>) -> Result<()> {
             }
         }
     }
-    
+
     // Write todo
     todo_list.write()?;
 
@@ -221,7 +224,11 @@ fn ui(f: &mut ratatui::Frame, app: &App) {
         .split(f.area());
 
     let title = Paragraph::new(app.title.as_str())
-        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+        .style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
         .block(Block::default().borders(Borders::ALL).title("Status"));
     f.render_widget(title, chunks[0]);
 
@@ -232,7 +239,8 @@ fn ui(f: &mut ratatui::Frame, app: &App) {
         .label(format!("{:.0}%", app.progress * 100.0));
     f.render_widget(gauge, chunks[1]);
 
-    let logs: Vec<ListItem> = app.logs
+    let logs: Vec<ListItem> = app
+        .logs
         .iter()
         .rev()
         .map(|m| {
@@ -246,17 +254,16 @@ fn ui(f: &mut ratatui::Frame, app: &App) {
             ListItem::new(Line::from(vec![Span::styled(m, style)]))
         })
         .collect();
-    
-    let logs_list = List::new(logs)
-        .block(Block::default().borders(Borders::ALL).title("Logs"));
+
+    let logs_list = List::new(logs).block(Block::default().borders(Borders::ALL).title("Logs"));
     f.render_widget(logs_list, chunks[2]);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::backend::TestBackend;
     use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
 
     #[test]
@@ -331,7 +338,11 @@ mod tests {
 
             if let Some(idx) = line_str.find(text) {
                 let cell = line_cells[idx];
-                assert_eq!(cell.fg, expected_fg, "Text '{}' at y={} has wrong color. Expected {:?}, got {:?}", text, y, expected_fg, cell.fg);
+                assert_eq!(
+                    cell.fg, expected_fg,
+                    "Text '{}' at y={} has wrong color. Expected {:?}, got {:?}",
+                    text, y, expected_fg, cell.fg
+                );
                 found = true;
                 break;
             }

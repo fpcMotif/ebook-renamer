@@ -1,5 +1,23 @@
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use std::path::PathBuf;
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+pub enum CloudMode {
+    /// Use filename + size metadata only (no local hashing)
+    Metadata,
+    /// Prefer provider API hashes (Dropbox content_hash, Google Drive md5Checksum)
+    Api,
+    /// Try API hashes, then metadata to avoid downloads, fallback to local hash
+    Hybrid,
+    #[value(skip)]
+    Local,
+}
+
+impl Default for CloudMode {
+    fn default() -> Self {
+        CloudMode::Local
+    }
+}
 
 #[derive(Parser, Debug)]
 #[command(
@@ -34,10 +52,7 @@ pub struct Args {
     pub max_depth: usize,
 
     /// Disable recursive scanning, only process top-level directory
-    #[arg(
-        long,
-        help = "Only scan the top-level directory, no recursion"
-    )]
+    #[arg(long, help = "Only scan the top-level directory, no recursion")]
     pub no_recursive: bool,
 
     /// Custom file extensions to process
@@ -49,10 +64,7 @@ pub struct Args {
     pub extensions: Option<String>,
 
     /// Don't delete duplicate files, only report
-    #[arg(
-        long,
-        help = "Don't delete duplicates, only list them"
-    )]
+    #[arg(long, help = "Don't delete duplicates, only list them")]
     pub no_delete: bool,
 
     /// Custom path for todo.md
@@ -79,10 +91,7 @@ pub struct Args {
     pub preserve_unicode: bool,
 
     /// Fetch arXiv metadata (placeholder for future implementation)
-    #[arg(
-        long,
-        help = "Fetch arXiv metadata via API (not implemented yet)"
-    )]
+    #[arg(long, help = "Fetch arXiv metadata via API (not implemented yet)")]
     pub fetch_arxiv: bool,
 
     /// Verbose output
@@ -123,6 +132,15 @@ pub struct Args {
         help = "Automatically remove empty .download/.crdownload folders after extracting PDFs"
     )]
     pub cleanup_downloads: bool,
+
+    /// Cloud handling strategy (metadata|api|hybrid)
+    #[arg(
+        long,
+        value_enum,
+        value_name = "MODE",
+        help = "Control hashing behavior on cloud/virtual mounts: metadata (name+size), api (provider hash), hybrid (prefer API/metadata before local hash)"
+    )]
+    pub cloud_mode: Option<CloudMode>,
 }
 
 impl Args {
@@ -133,11 +151,7 @@ impl Args {
                 .map(|s| format!(".{}", s.trim().trim_start_matches('.')))
                 .collect()
         } else {
-            vec![
-                ".pdf".to_string(),
-                ".epub".to_string(),
-                ".txt".to_string(),
-            ]
+            vec![".pdf".to_string(), ".epub".to_string(), ".txt".to_string()]
         }
     }
 }
@@ -165,6 +179,7 @@ mod tests {
             json: false,
             skip_cloud_hash: false,
             cleanup_downloads: false,
+            cloud_mode: None,
         };
 
         let exts = args.get_extensions();
@@ -193,6 +208,7 @@ mod tests {
             json: false,
             skip_cloud_hash: false,
             cleanup_downloads: false,
+            cloud_mode: None,
         };
 
         let exts = args.get_extensions();
@@ -220,6 +236,7 @@ mod tests {
             json: false,
             skip_cloud_hash: false,
             cleanup_downloads: false,
+            cloud_mode: None,
         };
 
         let exts = args.get_extensions();

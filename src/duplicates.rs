@@ -1,6 +1,7 @@
-use crate::scanner::FileInfo;
+use crate::cli::CloudMode;
+use crate::scanner::{CloudMetadata, FileInfo};
 use anyhow::Result;
-use log::debug;
+use log::{debug, warn};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
@@ -8,27 +9,28 @@ use std::path::PathBuf;
 // Allowed formats to keep
 const ALLOWED_EXTENSIONS: &[&str] = &[".pdf", ".epub", ".txt"];
 
-pub fn detect_duplicates(files: Vec<FileInfo>, skip_hash: bool) -> Result<(Vec<Vec<PathBuf>>, Vec<FileInfo>)> {
+pub fn detect_duplicates(
+    files: Vec<FileInfo>,
+    cloud_mode: CloudMode,
+) -> Result<(Vec<Vec<PathBuf>>, Vec<FileInfo>)> {
     // Filter to only allowed formats first
     let filtered_files: Vec<FileInfo> = files
         .into_iter()
         .filter(|f| ALLOWED_EXTENSIONS.contains(&f.extension.as_str()))
         .collect();
-    
-    debug!("Filtered to {} files with allowed extensions", filtered_files.len());
-    
+
+    debug!(
+        "Filtered to {} files with allowed extensions",
+        filtered_files.len()
+    );
+
     // Build hash map: key -> list of file infos
-    // Key is either MD5 hash or normalized filename depending on skip_hash
     let mut hash_map: HashMap<String, Vec<FileInfo>> = HashMap::new();
 
-    if skip_hash {
-        debug!("Skipping MD5 hash computation, using filename-based deduplication");
+    if matches!(cloud_mode, CloudMode::Metadata) {
+        warn!("Cloud metadata mode enabled: grouping duplicates by normalized name + size only");
         for file_info in &filtered_files {
-            if !file_info.is_failed_download && !file_info.is_too_small {
-                // Use new_name if available, otherwise original_name
-                let key = file_info.new_name.clone()
-                    .unwrap_or_else(|| file_info.original_name.clone());
-                
+            if let Some(key) = metadata_key(file_info) {
                 hash_map
                     .entry(key)
                     .or_insert_with(Vec::new)
@@ -36,43 +38,21 @@ pub fn detect_duplicates(files: Vec<FileInfo>, skip_hash: bool) -> Result<(Vec<V
             }
         }
     } else {
-        // Optimization: Group by size first
-        // Only compute MD5 for files that have the same size
-        let mut size_map: HashMap<u64, Vec<&FileInfo>> = HashMap::new();
-        
         for file_info in &filtered_files {
-            if !file_info.is_failed_download && !file_info.is_too_small {
-                size_map
-                    .entry(file_info.size)
-                    .or_insert_with(Vec::new)
-                    .push(file_info);
-            }
-        }
-
-        debug!("Grouped {} files into {} size groups", filtered_files.len(), size_map.len());
-
-        for (size, files) in size_map {
-            // If only one file has this size, it cannot be a duplicate (unless size is 0, but we filter those)
-            if files.len() == 1 {
-                continue;
-            }
-
-            debug!("Size {} has {} potential duplicates, computing hashes...", size, files.len());
-            
-            for file_info in files {
-                match compute_md5(&file_info.original_path) {
-                    Ok(hash) => {
-                        hash_map
-                            .entry(hash)
-                            .or_insert_with(Vec::new)
-                            .push(file_info.clone());
-                    },
-                    Err(e) => {
-                        debug!("Failed to compute hash for {}: {}", file_info.original_path.display(), e);
-                        // Treat as unique if we can't read it? Or just skip? 
-                        // Skipping might be safer to avoid false negatives, or maybe we should warn.
-                        // For now, let's just log and skip adding to duplicate map (so it stays "clean")
-                    }
+            match duplicate_key_for_file(file_info, cloud_mode) {
+                Ok(Some(key)) => {
+                    hash_map
+                        .entry(key)
+                        .or_insert_with(Vec::new)
+                        .push(file_info.clone());
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    debug!(
+                        "Failed to compute duplicate key for {}: {}",
+                        file_info.original_path.display(),
+                        e
+                    );
                 }
             }
         }
@@ -86,10 +66,10 @@ pub fn detect_duplicates(files: Vec<FileInfo>, skip_hash: bool) -> Result<(Vec<V
         if file_infos.len() > 1 {
             // Multiple files with same hash - apply retention strategy
             let kept_file = select_file_to_keep(&file_infos);
-            
+
             let mut group_paths: Vec<PathBuf> = Vec::new();
             group_paths.push(kept_file.original_path.clone());
-            
+
             for file_info in &file_infos {
                 if file_info.original_path != kept_file.original_path {
                     duplicate_paths.insert(file_info.original_path.clone());
@@ -98,7 +78,11 @@ pub fn detect_duplicates(files: Vec<FileInfo>, skip_hash: bool) -> Result<(Vec<V
             }
 
             duplicate_groups.push(group_paths);
-            debug!("Found duplicate group with {} files, keeping: {}", file_infos.len(), kept_file.original_name);
+            debug!(
+                "Found duplicate group with {} files, keeping: {}",
+                file_infos.len(),
+                kept_file.original_name
+            );
         }
     }
 
@@ -111,6 +95,74 @@ pub fn detect_duplicates(files: Vec<FileInfo>, skip_hash: bool) -> Result<(Vec<V
     Ok((duplicate_groups, clean_files))
 }
 
+fn duplicate_key_for_file(file_info: &FileInfo, cloud_mode: CloudMode) -> Result<Option<String>> {
+    if file_info.is_failed_download || file_info.is_too_small {
+        return Ok(None);
+    }
+
+    if matches!(cloud_mode, CloudMode::Api | CloudMode::Hybrid) {
+        if let Some(hash) = provider_hash(&file_info.cloud_metadata) {
+            debug!(
+                "Using provider hash for {} (mode {:?})",
+                file_info.original_path.display(),
+                cloud_mode
+            );
+            return Ok(Some(format!("hash:{}", hash)));
+        } else if matches!(cloud_mode, CloudMode::Api) {
+            warn!(
+                "API mode requested but no provider hash was found for {} – falling back to local hash",
+                file_info.original_path.display()
+            );
+        }
+    }
+
+    if matches!(cloud_mode, CloudMode::Hybrid) && file_info.cloud_metadata.is_virtual {
+        if let Some(meta_key) = metadata_key(file_info) {
+            warn!(
+                "Hybrid mode: using metadata duplicate key for virtual file {} to avoid local hashing",
+                file_info.original_path.display()
+            );
+            return Ok(Some(meta_key));
+        }
+    }
+
+    match compute_md5(&file_info.original_path) {
+        Ok(hash) => Ok(Some(format!("hash:{}", hash))),
+        Err(e) => {
+            debug!(
+                "Failed to compute hash for {}: {}",
+                file_info.original_path.display(),
+                e
+            );
+            Ok(None)
+        }
+    }
+}
+
+fn metadata_key(file_info: &FileInfo) -> Option<String> {
+    if file_info.is_failed_download || file_info.is_too_small {
+        return None;
+    }
+
+    let name = file_info
+        .new_name
+        .clone()
+        .unwrap_or_else(|| file_info.original_name.clone())
+        .to_lowercase();
+    Some(format!("meta:{}::{}", name, file_info.size))
+}
+
+fn provider_hash(cloud_metadata: &CloudMetadata) -> Option<String> {
+    if let Some(ref hash) = cloud_metadata.dropbox_content_hash {
+        return Some(format!("dropbox:{}", hash));
+    }
+    if let Some(ref hash) = cloud_metadata.gdrive_md5_checksum {
+        return Some(format!("gdrive:{}", hash));
+    }
+
+    None
+}
+
 // Select file to keep based on priority: normalized > shortest path > newest
 fn select_file_to_keep(files: &[FileInfo]) -> &FileInfo {
     // Priority 1: Already normalized files (have new_name set)
@@ -120,26 +172,32 @@ fn select_file_to_keep(files: &[FileInfo]) -> &FileInfo {
         .filter(|(_, f)| f.new_name.is_some())
         .map(|(i, _)| i)
         .collect();
-    
+
     // Use the original files slice, but remember which ones are normalized
     let normalized_set: std::collections::HashSet<usize> = normalized_indices.into_iter().collect();
-    
+
     // Priority 2: Shortest path (fewest directory components) among normalized files, then all files
     let candidates_with_depth: Vec<(usize, usize)> = files
         .iter()
         .enumerate()
         .map(|(i, f)| (i, f.original_path.components().count()))
         .collect();
-    
+
     let min_depth = if normalized_set.is_empty() {
-        candidates_with_depth.iter().map(|(_, d)| *d).min().unwrap_or(usize::MAX)
+        candidates_with_depth
+            .iter()
+            .map(|(_, d)| *d)
+            .min()
+            .unwrap_or(usize::MAX)
     } else {
-        candidates_with_depth.iter()
+        candidates_with_depth
+            .iter()
             .filter(|(i, _)| normalized_set.contains(i))
             .map(|(_, d)| *d)
-            .min().unwrap_or(usize::MAX)
+            .min()
+            .unwrap_or(usize::MAX)
     };
-    
+
     let shallowest_indices: Vec<usize> = candidates_with_depth
         .into_iter()
         .filter(|(i, depth)| {
@@ -147,7 +205,7 @@ fn select_file_to_keep(files: &[FileInfo]) -> &FileInfo {
         })
         .map(|(i, _)| i)
         .collect();
-    
+
     // Priority 3: Newest modification time among the shallowest candidates
     let best_index = shallowest_indices
         .iter()
@@ -160,7 +218,7 @@ fn select_file_to_keep(files: &[FileInfo]) -> &FileInfo {
             }
             0
         });
-    
+
     &files[best_index]
 }
 
@@ -227,8 +285,8 @@ fn compute_md5(path: &std::path::Path) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
     use std::time::Duration;
+    use tempfile::TempDir;
 
     #[test]
     fn test_detect_duplicates_by_hash() -> Result<()> {
@@ -251,6 +309,7 @@ mod tests {
                 is_too_small: false,
                 new_name: Some("Book 1.pdf".to_string()),
                 new_path: tmp_dir.path().join("Book 1.pdf"),
+                cloud_metadata: CloudMetadata::default(),
             },
             FileInfo {
                 original_path: file2.clone(),
@@ -262,10 +321,11 @@ mod tests {
                 is_too_small: false,
                 new_name: Some("Book 2.pdf".to_string()),
                 new_path: tmp_dir.path().join("Book 2.pdf"),
+                cloud_metadata: CloudMetadata::default(),
             },
         ];
 
-        let (dup_groups, clean_files) = detect_duplicates(files, false)?;
+        let (dup_groups, clean_files) = detect_duplicates(files, CloudMode::Local)?;
 
         assert_eq!(dup_groups.len(), 1);
         assert_eq!(dup_groups[0].len(), 2);
@@ -275,19 +335,150 @@ mod tests {
     }
 
     #[test]
+    fn test_metadata_mode_groups_by_name_and_size() -> Result<()> {
+        let tmp_dir = TempDir::new()?;
+        let file1 = tmp_dir.path().join("paper.pdf");
+        let file2 = tmp_dir.path().join("paper (1).pdf");
+
+        fs::write(&file1, "abc")?;
+        fs::write(&file2, "def")?; // Different content but same length
+
+        let files = vec![
+            FileInfo {
+                original_path: file1.clone(),
+                original_name: "paper.pdf".to_string(),
+                extension: ".pdf".to_string(),
+                size: 3,
+                modified_time: std::time::SystemTime::now(),
+                is_failed_download: false,
+                is_too_small: false,
+                new_name: Some("Normalized.pdf".to_string()),
+                new_path: tmp_dir.path().join("Normalized.pdf"),
+                cloud_metadata: CloudMetadata::default(),
+            },
+            FileInfo {
+                original_path: file2.clone(),
+                original_name: "paper (1).pdf".to_string(),
+                extension: ".pdf".to_string(),
+                size: 3,
+                modified_time: std::time::SystemTime::now(),
+                is_failed_download: false,
+                is_too_small: false,
+                new_name: Some("Normalized.pdf".to_string()),
+                new_path: tmp_dir.path().join("Normalized.pdf"),
+                cloud_metadata: CloudMetadata::default(),
+            },
+        ];
+
+        let (dup_groups, clean_files) = detect_duplicates(files, CloudMode::Metadata)?;
+
+        assert_eq!(dup_groups.len(), 1);
+        assert_eq!(dup_groups[0].len(), 2);
+        assert_eq!(clean_files.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn test_api_mode_prefers_provider_hash() -> Result<()> {
+        let tmp_dir = TempDir::new()?;
+        let file1 = tmp_dir.path().join("cloud1.pdf");
+        let file2 = tmp_dir.path().join("cloud2.pdf");
+
+        fs::write(&file1, "abc")?;
+        fs::write(&file2, "xyz")?;
+
+        let mut cloud_meta = CloudMetadata::default();
+        cloud_meta.dropbox_content_hash = Some("same_hash".to_string());
+
+        let files = vec![
+            FileInfo {
+                original_path: file1.clone(),
+                original_name: "cloud1.pdf".to_string(),
+                extension: ".pdf".to_string(),
+                size: 3,
+                modified_time: std::time::SystemTime::now(),
+                is_failed_download: false,
+                is_too_small: false,
+                new_name: Some("Cloud.pdf".to_string()),
+                new_path: file1.clone(),
+                cloud_metadata: cloud_meta.clone(),
+            },
+            FileInfo {
+                original_path: file2.clone(),
+                original_name: "cloud2.pdf".to_string(),
+                extension: ".pdf".to_string(),
+                size: 3,
+                modified_time: std::time::SystemTime::now(),
+                is_failed_download: false,
+                is_too_small: false,
+                new_name: Some("Cloud.pdf".to_string()),
+                new_path: file2.clone(),
+                cloud_metadata: cloud_meta,
+            },
+        ];
+
+        let (dup_groups, clean_files) = detect_duplicates(files, CloudMode::Api)?;
+
+        assert_eq!(dup_groups.len(), 1);
+        assert_eq!(dup_groups[0].len(), 2);
+        assert_eq!(clean_files.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn test_hybrid_mode_falls_back_to_metadata_for_virtual_mounts() -> Result<()> {
+        let tmp_dir = TempDir::new()?;
+        let file1 = tmp_dir.path().join("v1.pdf");
+        let file2 = tmp_dir.path().join("v2.pdf");
+
+        fs::write(&file1, "same_len_a")?;
+        fs::write(&file2, "same_len_b")?; // Same size, different content
+
+        let mut meta1 = CloudMetadata::default();
+        meta1.is_virtual = true;
+        let mut meta2 = CloudMetadata::default();
+        meta2.is_virtual = true;
+
+        let files = vec![
+            FileInfo {
+                original_path: file1.clone(),
+                original_name: "v1.pdf".to_string(),
+                extension: ".pdf".to_string(),
+                size: 9,
+                modified_time: std::time::SystemTime::now(),
+                is_failed_download: false,
+                is_too_small: false,
+                new_name: Some("Virtual.pdf".to_string()),
+                new_path: file1.clone(),
+                cloud_metadata: meta1,
+            },
+            FileInfo {
+                original_path: file2.clone(),
+                original_name: "v2.pdf".to_string(),
+                extension: ".pdf".to_string(),
+                size: 9,
+                modified_time: std::time::SystemTime::now(),
+                is_failed_download: false,
+                is_too_small: false,
+                new_name: Some("Virtual.pdf".to_string()),
+                new_path: file2.clone(),
+                cloud_metadata: meta2,
+            },
+        ];
+
+        let (dup_groups, clean_files) = detect_duplicates(files, CloudMode::Hybrid)?;
+
+        assert_eq!(dup_groups.len(), 1);
+        assert_eq!(dup_groups[0].len(), 2);
+        assert_eq!(clean_files.len(), 1);
+        Ok(())
+    }
+
+    #[test]
     fn test_strip_variant_suffix() {
-        assert_eq!(
-            strip_variant_suffix("Book Title (1).pdf"),
-            "Book Title.pdf"
-        );
-        assert_eq!(
-            strip_variant_suffix("Another (2).epub"),
-            "Another.epub"
-        );
-        assert_eq!(
-            strip_variant_suffix("No Variant.pdf"),
-            "No Variant.pdf"
-        );
+        assert_eq!(strip_variant_suffix("Book Title (1).pdf"), "Book Title.pdf");
+        assert_eq!(strip_variant_suffix("Another (2).epub"), "Another.epub");
+        assert_eq!(strip_variant_suffix("No Variant.pdf"), "No Variant.pdf");
     }
 
     #[test]
@@ -306,6 +497,7 @@ mod tests {
             is_too_small: false,
             new_name: None,
             new_path: tmp_dir.path().join("original.pdf"),
+            cloud_metadata: CloudMetadata::default(),
         };
 
         // File 2: Normalized
@@ -319,6 +511,7 @@ mod tests {
             is_too_small: false,
             new_name: Some("Normalized Title.pdf".to_string()),
             new_path: tmp_dir.path().join("Normalized Title.pdf"),
+            cloud_metadata: CloudMetadata::default(),
         };
 
         let files = vec![f1, f2];
@@ -345,6 +538,7 @@ mod tests {
             is_too_small: false,
             new_name: None,
             new_path: tmp_dir.path().join("a").join("b").join("deep.pdf"),
+            cloud_metadata: CloudMetadata::default(),
         };
 
         // File 2: Shallow path
@@ -358,6 +552,7 @@ mod tests {
             is_too_small: false,
             new_name: None,
             new_path: tmp_dir.path().join("shallow.pdf"),
+            cloud_metadata: CloudMetadata::default(),
         };
 
         let files = vec![f1, f2];
@@ -384,6 +579,7 @@ mod tests {
             is_too_small: false,
             new_name: None,
             new_path: tmp_dir.path().join("file1.pdf"),
+            cloud_metadata: CloudMetadata::default(),
         };
 
         // File 2: Newer
@@ -397,6 +593,7 @@ mod tests {
             is_too_small: false,
             new_name: None,
             new_path: tmp_dir.path().join("file2.pdf"),
+            cloud_metadata: CloudMetadata::default(),
         };
 
         let files = vec![f1, f2];
@@ -410,22 +607,22 @@ mod tests {
     fn test_detect_duplicates_skip_hash() {
         let tmp_dir = TempDir::new().unwrap();
 
-        let files = vec![
-            FileInfo {
-                original_path: tmp_dir.path().join("file1.pdf"),
-                original_name: "file1.pdf".to_string(),
-                extension: ".pdf".to_string(),
-                size: 100,
-                modified_time: std::time::SystemTime::now(),
-                is_failed_download: false,
-                is_too_small: false,
-                new_name: None,
-                new_path: tmp_dir.path().join("file1.pdf"),
-            }
-        ];
+        let files = vec![FileInfo {
+            original_path: tmp_dir.path().join("file1.pdf"),
+            original_name: "file1.pdf".to_string(),
+            extension: ".pdf".to_string(),
+            size: 100,
+            modified_time: std::time::SystemTime::now(),
+            is_failed_download: false,
+            is_too_small: false,
+            new_name: None,
+            new_path: tmp_dir.path().join("file1.pdf"),
+            cloud_metadata: CloudMetadata::default(),
+        }];
 
         // Even if files are present, skip_hash=true should return empty duplicate groups
-        let (dup_groups, clean_files) = detect_duplicates(files.clone(), true).unwrap();
+        let (dup_groups, clean_files) =
+            detect_duplicates(files.clone(), CloudMode::Metadata).unwrap();
 
         assert!(dup_groups.is_empty());
         assert_eq!(clean_files.len(), 1);
@@ -446,6 +643,7 @@ mod tests {
             is_too_small: false,
             new_name: Some("Book.pdf".to_string()),
             new_path: tmp_dir.path().join("Book.pdf"),
+            cloud_metadata: CloudMetadata::default(),
         };
 
         let f2 = FileInfo {
@@ -458,6 +656,7 @@ mod tests {
             is_too_small: false,
             new_name: Some("Book (1).pdf".to_string()),
             new_path: tmp_dir.path().join("Book (1).pdf"),
+            cloud_metadata: CloudMetadata::default(),
         };
 
         let files = vec![f1, f2];
@@ -474,7 +673,7 @@ mod tests {
 
         // Two files with different original names but SAME new_name
         // And different content (simulated by not writing content, since we skip hash)
-        
+
         let f1 = FileInfo {
             original_path: tmp_dir.path().join("file1.pdf"),
             original_name: "file1.pdf".to_string(),
@@ -485,6 +684,7 @@ mod tests {
             is_too_small: false,
             new_name: Some("Final Name.pdf".to_string()),
             new_path: tmp_dir.path().join("Final Name.pdf"),
+            cloud_metadata: CloudMetadata::default(),
         };
 
         let f2 = FileInfo {
@@ -497,12 +697,13 @@ mod tests {
             is_too_small: false,
             new_name: Some("Final Name.pdf".to_string()),
             new_path: tmp_dir.path().join("Final Name.pdf"),
+            cloud_metadata: CloudMetadata::default(),
         };
 
         let files = vec![f1, f2];
 
         // When skip_hash is true, we expect it to find duplicates based on new_name
-        let (dup_groups, clean_files) = detect_duplicates(files, true).unwrap();
+        let (dup_groups, clean_files) = detect_duplicates(files, CloudMode::Metadata).unwrap();
 
         assert_eq!(dup_groups.len(), 1, "Should find 1 duplicate group");
         assert_eq!(dup_groups[0].len(), 2, "Group should have 2 files");

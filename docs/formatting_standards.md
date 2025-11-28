@@ -4,7 +4,7 @@ This document outlines the key formatting rules and patterns used to normalize e
 
 ## Output Format
 
-**Standard Format:** `Author, Author - Title (Year).pdf`
+**Standard Format:** `Author, Author - Title (Series) (Year).pdf`
 
 Examples:
 - `Paulo Ventura Araujo - Differential Geometry.pdf`
@@ -247,3 +247,15 @@ Use these examples to validate implementation:
 - **Case sensitivity:** Preserve original capitalization of author names and titles
 - **Whitespace:** Normalize multiple spaces to single space, trim leading/trailing
 
+## Cloud Storage Usage
+
+For cloud storage (Dropbox, Google Drive, OneDrive) where files might be placeholders ("smart sync" or "files on demand"):
+
+- Use the `--skip-cloud-hash` flag to prevent downloading files for hash checks.
+- Duplicate detection will rely on **filename normalization** only.
+- This allows native renaming of placeholders without triggering mass downloads.
+
+Example:
+```bash
+ebook-renamer --path "C:\Users\Name\Dropbox\Books" --skip-cloud-hash
+```

@@ -7,6 +7,7 @@ pub struct ParsedMetadata {
     pub authors: Option<String>,
     pub title: String,
     pub year: Option<u16>,
+    pub series: Option<String>,
 }
 
 pub fn normalize_files(mut files: Vec<FileInfo>) -> Result<Vec<FileInfo>> {
@@ -40,10 +41,15 @@ fn parse_filename(filename: &str, extension: &str) -> Result<ParsedMetadata> {
     base = base.strip_suffix(".download").unwrap_or(base);
     let mut base = base.trim().to_string();
 
-    // Step 2: Remove series prefixes (must be early, before other cleaning)
-    base = remove_series_prefixes(&base);
+    // Step 2: Extract series info (must be early, before other cleaning)
+    let (cleaned_base, series) = extract_series_info(&base);
+    base = cleaned_base;
 
     // Step 3: Remove ALL bracketed annotations [Lecture notes], [masters thesis], [expository notes], etc.
+    // If we haven't found a series yet, check if any of these brackets contain series info
+    if series.is_none() {
+        // TODO: potentially extract series from brackets here if needed
+    }
     base = Regex::new(r"\s*\[[^\]]*\]").unwrap().replace_all(&base, "").to_string();
 
     // Step 4: Clean noise sources (Z-Library, libgen, Anna's Archive, hashes)
@@ -62,6 +68,7 @@ fn parse_filename(filename: &str, extension: &str) -> Result<ParsedMetadata> {
 
     // Step 7: Remove ALL parenthetical content that contains year or publisher info
     // Keep only author names in parens if at the end
+    // Note: If we found a series earlier, we don't need to look for it here, but we still clean publisher info
     base = clean_parentheticals(&base, year);
 
     // Step 8: Parse author and title with smart pattern matching
@@ -71,10 +78,11 @@ fn parse_filename(filename: &str, extension: &str) -> Result<ParsedMetadata> {
         authors,
         title,
         year,
+        series,
     })
 }
 
-fn remove_series_prefixes(s: &str) -> String {
+fn extract_series_info(s: &str) -> (String, Option<String>) {
     // Remove exact series prefixes from the start of the filename
     // These must be removed early before other processing
     let series_prefixes = [
@@ -88,10 +96,14 @@ fn remove_series_prefixes(s: &str) -> String {
     ];
     
     let mut result = s.to_string();
+    let mut extracted_series = None;
     
     for prefix in &series_prefixes {
         // Remove prefix followed by dash or space
         if result.starts_with(prefix) {
+            let clean_prefix = prefix.trim_matches(|c| c == '[' || c == ']');
+            extracted_series = Some(clean_prefix.to_string());
+
             result = result[prefix.len()..].to_string();
             // Remove leading dash or space
             result = result.trim_start_matches(|c: char| c == '-' || c == ' ' || c == ']').to_string();
@@ -99,11 +111,15 @@ fn remove_series_prefixes(s: &str) -> String {
         }
     }
 
+    if extracted_series.is_some() {
+        return (result.trim().to_string(), extracted_series);
+    }
+
     // Generic pattern: (Series Name) Author - Title
     // If it starts with (...), check if the next part looks like an author
     let re_generic = Regex::new(r"^\s*\(([^)]+)\)\s+(.+)$").unwrap();
     if let Some(caps) = re_generic.captures(&result) {
-        let _series_part = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+        let series_part = caps.get(1).map(|m| m.as_str()).unwrap_or("").to_string();
         let rest_part = caps.get(2).map(|m| m.as_str()).unwrap_or("");
         
         // Check if 'rest_part' starts with an author
@@ -116,11 +132,18 @@ fn remove_series_prefixes(s: &str) -> String {
         };
 
         if is_likely_author(potential_author) {
-            result = rest_part.to_string();
+            // Check if series_part looks like a series (contains numbers or "Series" or similar keywords)
+            // or if it's just general info we want to preserve as series
+            // For now, if it was in parens at the start and followed by author, we treat it as series/info
+            // unless it's strictly publisher name only
+            if !is_strict_publisher_info(&series_part) || series_part.contains("Series") || series_part.contains("Vol") {
+                 extracted_series = Some(series_part);
+                 result = rest_part.to_string();
+            }
         }
     }
     
-    result.trim().to_string()
+    (result.trim().to_string(), extracted_series)
 }
 
 fn clean_noise_sources(s: &str) -> String {
@@ -615,6 +638,11 @@ fn generate_new_filename(metadata: &ParsedMetadata, extension: &str) -> String {
 
     result.push_str(&metadata.title);
 
+    // Add series info if available, in parentheses
+    if let Some(ref series) = metadata.series {
+        result.push_str(&format!(" ({})", series));
+    }
+
     if let Some(year) = metadata.year {
         result.push_str(&format!(" ({})", year));
     }
@@ -660,9 +688,10 @@ mod tests {
             authors: Some("John Smith".to_string()),
             title: "Great Book".to_string(),
             year: Some(2015),
+            series: Some("Awesome Series Vol. 1".to_string()),
         };
         let new_name = generate_new_filename(&metadata, ".pdf");
-        assert_eq!(new_name, "John Smith - Great Book (2015).pdf");
+        assert_eq!(new_name, "John Smith - Great Book (Awesome Series Vol. 1) (2015).pdf");
     }
 
     #[test]
@@ -671,6 +700,7 @@ mod tests {
             authors: Some("Jane Doe".to_string()),
             title: "Another Book".to_string(),
             year: None,
+            series: None,
         };
         let new_name = generate_new_filename(&metadata, ".pdf");
         assert_eq!(new_name, "Jane Doe - Another Book.pdf");
@@ -932,8 +962,8 @@ mod tests {
     }
 
     #[test]
-    fn test_graduate_texts_series_removal() {
-        // Series prefix with bracket should be removed
+    fn test_graduate_texts_series_preservation() {
+        // Series prefix with bracket should be preserved as series info
         let metadata = parse_filename(
             "Graduate Texts in Mathematics - Saunders Mac Lane - Categories for the Working Mathematician (1978).pdf",
             ".pdf"
@@ -941,19 +971,22 @@ mod tests {
         assert_eq!(metadata.authors, Some("Saunders Mac Lane".to_string()));
         assert_eq!(metadata.title, "Categories for the Working Mathematician");
         assert_eq!(metadata.year, Some(1978));
-        assert!(!metadata.title.contains("Graduate Texts"));
+        assert_eq!(metadata.series, Some("Graduate Texts in Mathematics".to_string()));
+
+        let new_name = generate_new_filename(&metadata, ".pdf");
+        assert!(new_name.contains("(Graduate Texts in Mathematics)"));
     }
 
     #[test]
-    fn test_london_math_society_series() {
-        // Series prefix at start should be removed
+    fn test_london_math_society_series_preservation() {
+        // Series prefix at start should be preserved
         let metadata = parse_filename(
             "London Mathematical Society Lecture Note Series - B. R. Tennison - Sheaf Theory.pdf",
             ".pdf"
         ).unwrap();
         assert_eq!(metadata.authors, Some("B. R. Tennison".to_string()));
         assert_eq!(metadata.title, "Sheaf Theory");
-        assert!(!metadata.title.contains("London Mathematical"));
+        assert_eq!(metadata.series, Some("London Mathematical Society Lecture Note Series".to_string()));
     }
 
     #[test]

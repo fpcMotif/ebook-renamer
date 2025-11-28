@@ -4,15 +4,22 @@ This document outlines the key formatting rules and patterns used to normalize e
 
 ## Output Format
 
-**Standard Format:** `Author, Author - Title (Year).pdf`
+**Standard Format:** `Author(s) - Title [Series Volume] (Year, Edition).ext`
 
-Examples:
-- `Paulo Ventura Araujo - Differential Geometry.pdf`
-- `John Baez - Category Theory Course.pdf`
-- `Barry Mitchell - Theory of Categories.pdf`
-- `Marco Grandis - Higher Dimensional Categories From Double To Multiple Categories.pdf`
-- `Wolfgang Bietenholz, Uwe-Jens Wiese - Uncovering Quantum Field Theory and the Standard Model.pdf`
-- `Jean-Pierre Serre - Local Fields (1979).pdf`
+**Components** (all optional except Title):
+- Author(s): Single or comma-separated authors
+- Title: Book title (with normalized "Vol N" if multi-volume)
+- [Series Volume]: Series abbreviation + number in brackets
+- (Year, Edition): Year and/or edition in parentheses
+
+**Examples (New Format)**:
+- Basic: `Paulo Ventura Araujo - Differential Geometry.pdf`
+- With year: `Jean-Pierre Serre - Local Fields (1979).pdf`
+- With series: `Saunders Mac Lane - Categories for the Working Mathematician [GTM 52] (1978).pdf`
+- With edition: `James Munkres - Topology (2000, 2nd ed).pdf`
+- With series + edition: `John Lee - Introduction to Smooth Manifolds [GTM 218] (2012, 2nd ed).pdf`
+- Multi-volume: `Michael Spivak - Differential Geometry Vol 2 (1979).pdf`
+- Multi-author: `Wolfgang Bietenholz, Uwe-Jens Wiese - Uncovering Quantum Field Theory.pdf`
 
 ## Key Rules
 
@@ -28,19 +35,58 @@ Examples:
   - Multiple commas with multi-word parts: keep ALL commas
 - **Author Detection:** Must have uppercase Latin letter OR non-Latin alphabetic characters (not just digits/punctuation)
 
-### 2. Year Formatting
+### 2. Series Formatting (NEW)
 
-- **Format:** `(YYYY)` only - no publisher info
+- **Format:** `[ABBR VOLUME]` - abbreviated series name + volume number
+- **Placement:** After title, before year
+- **Abbreviations:**
+  - `GTM` = Graduate Texts in Mathematics
+  - `CSAM` = Cambridge Studies in Advanced Mathematics
+  - `LMSLN` = London Mathematical Society Lecture Note Series
+  - `PM` = Progress in Mathematics
+  - `SUMS` = Springer Undergraduate Mathematics Series
+  - `GSM` = Graduate Studies in Mathematics
+- **Examples:**
+  - Input: `Graduate Texts in Mathematics 52 - Title.pdf`
+  - Output: `Author - Title [GTM 52].pdf`
+
+### 3. Edition Formatting (NEW)
+
+- **Format:** `Nth ed` - normalized edition indicator
+- **Placement:** In parentheses with year: `(Year, Edition)`
+- **Normalization:**
+  - `2nd Edition` → `2nd ed`
+  - `Second Edition` → `2nd ed`
+  - `Edition 3` → `3rd ed`
+- **Examples:**
+  - `Topology - 2nd Edition (2000).pdf` → `Topology (2000, 2nd ed).pdf`
+  - `Book Title 3rd ed.pdf` → `Book Title (3rd ed).pdf`
+
+### 4. Volume Formatting (NEW)
+
+- **Format:** `Vol N` - kept in title
+- **Normalization:** All volume patterns → `Vol N`
+  - `Volume 2` → `Vol 2`
+  - `Part 3` → `Vol 3`
+  - `Vol. 1` → `Vol 1`
+- **Examples:**
+  - `Spivak - Differential Geometry Volume 2.pdf`
+  - → `Michael Spivak - Differential Geometry Vol 2.pdf`
+
+### 5. Year Formatting
+
+- **Format:** `(YYYY)` or `(YYYY, Edition)` - year with optional edition
 - **Extraction:** Find **last occurrence** of 19xx or 20xx pattern in filename
 - **Removal:** Remove `(YYYY, Publisher)` → keep only year in final format
-- **Placement:** Year goes **after title**, before extension
+- **Placement:** Year goes **after title and series**, before extension
 - **Examples:**
   - `(2005, Birkhäuser)` → `(2005)`
   - `(2013)` → `(2013)`
   - `2020, Publisher` → `(2020)`
+  - With edition: `(2020, 2nd ed)`
   - `Deadly Decision in Beijing. ... (1989 Tiananmen Massacre)` → include `(1989)` at end
 
-### 3. What to Remove
+### 6. What to Remove
 
 #### Bracketed Annotations (Remove ALL)
 - `[Lecture notes]` → remove
@@ -75,7 +121,7 @@ Examples:
 - Multiple spaces → single space
 - Leading/trailing punctuation (dash, colon, comma, semicolon, period)
 
-### 4. Publisher/Series Detection Keywords
+### 7. Publisher/Series Detection Keywords
 
 If parenthetical content contains any of these keywords, remove it:
 
@@ -90,7 +136,7 @@ Also remove if:
 - Contains numbers with multiple non-letter characters (likely series info)
 - Matches pattern: `(YYYY, Publisher)` where YYYY is a year
 
-### 5. Author Detection Patterns
+### 8. Author Detection Patterns
 
 #### Pattern 1: Trailing Author in Parentheses
 ```
@@ -112,7 +158,7 @@ Also remove if:
 "Author1, Author2 - Title" → Authors: "Author1, Author2", Title: "Title"
 ```
 
-### 6. Author Validation Rules
+### 9. Author Validation Rules
 
 An author string is valid if:
 - Length >= 2 characters
@@ -120,22 +166,25 @@ An author string is valid if:
 - Does NOT contain: "auth.", "translator", "Z-Library", "libgen", "Anna's Archive"
 - Does NOT match publisher/series keywords
 
-### 7. Processing Order
+### 10. Processing Order
 
 1. **Remove extension** (.pdf, .epub, .txt, .download)
-2. **Clean noise sources** (Z-Library, libgen, Anna's Archive patterns)
-3. **Remove ALL bracketed annotations** `[...]`
-4. **Extract year** (find last occurrence of 19xx/20xx)
-5. **Remove parentheticals** containing:
+2. **Extract series information** (before removal, to preserve volume number)
+3. **Remove ALL bracketed annotations** `[...]` (except extracted series)
+4. **Clean noise sources** (Z-Library, libgen, Anna's Archive patterns)
+5. **Extract edition information** (detect and normalize to "Nth ed")
+6. **Extract year** (find last occurrence of 19xx/20xx)
+7. **Remove parentheticals** containing:
    - Year patterns: `(YYYY, Publisher)` or `(YYYY)`
    - Publisher/series keywords
    - But preserve author names at the end
-6. **Parse author and title** using smart pattern matching
-7. **Clean author name** (handle commas, remove (auth.) patterns)
-8. **Clean title** (remove orphaned brackets, multiple spaces, trailing punctuation)
-9. **Generate final filename**: `Author - Title (Year).ext`
+8. **Extract volume information** (normalize "Volume N" → "Vol N" in title)
+9. **Parse author and title** using smart pattern matching
+10. **Clean author name** (handle commas, remove (auth.) patterns)
+11. **Clean title** (remove orphaned brackets, multiple spaces, trailing punctuation)
+12. **Generate final filename**: `Author - Title [Series] (Year, Edition).ext`
 
-### 8. Edge Cases
+### 11. Edge Cases
 
 #### Nested Parentheticals
 ```

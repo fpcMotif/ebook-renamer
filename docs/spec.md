@@ -76,15 +76,30 @@ struct FileInfo {
 9. Clean title components
 10. Generate new filename
 
-### Series Prefix Removal
-These exact prefixes are stripped with following `-` or space:
-- `London Mathematical Society Lecture Note Series`
-- `Graduate Texts in Mathematics`
-- `Progress in Mathematics`
-- `[Springer-Lehrbuch]`
-- `[Graduate studies in mathematics`
-- `[Progress in Mathematics №`
-- `[AMS Mathematical Surveys and Monographs`
+### Series Detection and Preservation
+Series information is detected and preserved using abbreviations:
+
+**Series Abbreviation Mappings**:
+| Full Name | Abbreviation |
+|-----------|--------------|
+| Graduate Texts in Mathematics | GTM |
+| Cambridge Studies in Advanced Mathematics | CSAM |
+| London Mathematical Society Lecture Note Series | LMSLN |
+| Progress in Mathematics | PM |
+| Springer Undergraduate Mathematics Series | SUMS |
+| Graduate Studies in Mathematics | GSM |
+| AMS Mathematical Surveys and Monographs | AMS-MSM |
+| Oxford Graduate Texts in Mathematics | OGTM |
+| Springer Monographs in Mathematics | SMM |
+
+**Detection Patterns**:
+1. `Series Name Volume - Author - Title` → Extract series as `[Abbr Volume]`
+2. `(Series Name Volume) Author - Title` → Extract series as `[Abbr Volume]`
+3. `Series Name - Author - Title` (no volume) → Remove series name, no series field
+
+**Example**:
+- Input: `Graduate Texts in Mathematics 52 - Saunders Mac Lane - Categories.pdf`
+- Output: `Saunders Mac Lane - Categories [GTM 52].pdf`
 
 ### Source Indicator Removal
 These exact suffixes are removed:
@@ -108,6 +123,36 @@ Additional patterns removed:
 - `Uploaded by ...` (e.g., "Uploaded by user123")
 - `Via ...`
 - Website URLs (e.g., `www.example.com`, `site.net`, etc.)
+
+### Edition Detection
+Detects and normalizes edition information:
+
+**Detection Patterns**:
+- `2nd Edition`, `Second Edition`
+- `3rd ed`, `3rd ed.`
+- `Edition 2`
+
+**Normalization**: All patterns → `Nth ed` format (e.g., `2nd ed`, `3rd ed`)
+
+**Example**:
+- Input: `Topology - 2nd Edition - James Munkres.pdf`
+- Extracted: `2nd ed`
+- Output: `James Munkres - Topology (2nd ed).pdf`
+
+### Volume Detection
+Detects and normalizes volume information:
+
+**Detection Patterns**:
+- `Vol 2`, `Vol. 2`
+- `Volume 2`
+- `Part 2`
+
+**Normalization**: All patterns → `Vol N` in title (kept in place)
+
+**Example**:
+- Input: `Differential Geometry Volume 2 - Spivak.pdf`
+- Normalized Title: `Differential Geometry Vol 2`
+- Output: `Michael Spivak - Differential Geometry Vol 2.pdf`
 
 ### Year Extraction
 - Pattern: `\b(19|20)\d{2}\b`
@@ -141,8 +186,19 @@ Additional patterns removed:
 - Trim leading/trailing `- : , ;`
 
 ### Final Filename Format
-- With author and year: `Author - Title (Year).ext`
-- With author, no year: `Author - Title.ext`
+**Standard Format:** `Author(s) - Title [Series Volume] (Year, Edition).ext`
+
+**Components** (all optional except Title):
+- **Author(s)**: Single or comma-separated multiple authors
+- **Title**: Book title (may include volume info like "Vol 2")
+- **[Series Volume]**: Series abbreviation and volume number in brackets
+- **(Year, Edition)**: Year and edition in parentheses
+
+**Examples**:
+- With all fields: `John Lee - Introduction to Smooth Manifolds [GTM 218] (2012, 2nd ed).pdf`
+- With series only: `Saunders Mac Lane - Categories for the Working Mathematician [GTM 52] (1978).pdf`
+- With edition only: `James Munkres - Topology (2000, 2nd ed).pdf`
+- Basic format: `Author - Title (Year).ext`
 - No author: `Title (Year).ext` or `Title.ext`
 
 ## 4. Duplicate Detection Strategy

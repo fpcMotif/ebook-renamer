@@ -7,6 +7,9 @@ pub struct ParsedMetadata {
     pub authors: Option<String>,
     pub title: String,
     pub year: Option<u16>,
+    pub series: Option<String>,      // e.g., "GTM 52"
+    pub edition: Option<String>,     // e.g., "2nd ed"
+    pub volume: Option<String>,      // e.g., "Vol 2"
 }
 
 pub fn normalize_files(mut files: Vec<FileInfo>) -> Result<Vec<FileInfo>> {
@@ -40,88 +43,187 @@ fn parse_filename(filename: &str, extension: &str) -> Result<ParsedMetadata> {
     base = base.strip_suffix(".download").unwrap_or(base);
     let mut base = base.trim().to_string();
 
-    // Step 2: Remove series prefixes (must be early, before other cleaning)
-    base = remove_series_prefixes(&base);
+    // Step 2: Extract series information (before removal)
+    let (series_info, base_after_series) = extract_series_info(&base);
+    base = base_after_series;
 
-    // Step 3: Remove ALL bracketed annotations [Lecture notes], [masters thesis], [expository notes], etc.
+    // Step 3: Remove ALL bracketed annotations [Lecture notes], [masters thesis], etc.
+    // BUT preserve series info that was already extracted
     base = Regex::new(r"\s*\[[^\]]*\]").unwrap().replace_all(&base, "").to_string();
 
     // Step 4: Clean noise sources (Z-Library, libgen, Anna's Archive, hashes)
-    // MUST happen BEFORE author parsing to avoid treating (Z-Library) as author
     base = clean_noise_sources(&base);
 
     // Step 5: Remove duplicate markers: -2, -3, (1), (2), etc.
-    // But NOT years like (1978) or -1978
-    // These can appear at the end OR before a year in parens
-    base = Regex::new(r"[-\s]*\(\d{1,2}\)\s*$").unwrap().replace(&base, "").to_string();  // (1), (2) at end
-    base = Regex::new(r"-\d{1,2}\s*$").unwrap().replace(&base, "").to_string();  // -2, -3 at end
-    base = Regex::new(r"-\d{1,2}\s+\(").unwrap().replace(&base, " (").to_string();  // -2 before (year)
+    base = Regex::new(r"[-\s]*\(\d{1,2}\)\s*$").unwrap().replace(&base, "").to_string();
+    base = Regex::new(r"-\d{1,2}\s*$").unwrap().replace(&base, "").to_string();
+    base = Regex::new(r"-\d{1,2}\s+\(").unwrap().replace(&base, " (").to_string();
 
-    // Step 6: Extract year FIRST (most reliable)
+    // Step 6: Extract edition information
+    let (edition_info, base_after_edition) = extract_edition(&base);
+    base = base_after_edition;
+
+    // Step 7: Extract year
     let year = extract_year(&base);
 
-    // Step 7: Remove ALL parenthetical content that contains year or publisher info
-    // Keep only author names in parens if at the end
+    // Step 8: Remove parentheticals with year/publisher info
     base = clean_parentheticals(&base, year);
 
-    // Step 8: Parse author and title with smart pattern matching
+    // Step 9: Extract volume information from title
+    let (volume_info, base_after_volume) = extract_volume(&base);
+    base = base_after_volume;
+
+    // Step 10: Parse author and title
     let (authors, title) = smart_parse_author_title(&base);
 
     Ok(ParsedMetadata {
         authors,
         title,
         year,
+        series: series_info,
+        edition: edition_info,
+        volume: volume_info,
     })
 }
 
-fn remove_series_prefixes(s: &str) -> String {
-    // Remove exact series prefixes from the start of the filename
-    // These must be removed early before other processing
-    let series_prefixes = [
-        "London Mathematical Society Lecture Note Series",
-        "Graduate Texts in Mathematics",
-        "Progress in Mathematics",
-        "[Springer-Lehrbuch]",
-        "[Graduate studies in mathematics",
-        "[Progress in Mathematics №",
-        "[AMS Mathematical Surveys and Monographs",
+fn extract_series_info(s: &str) -> (Option<String>, String) {
+    // Series abbreviation mappings
+    let series_mappings = [
+        ("Graduate Texts in Mathematics", "GTM"),
+        ("Cambridge Studies in Advanced Mathematics", "CSAM"),
+        ("London Mathematical Society Lecture Note Series", "LMSLN"),
+        ("Progress in Mathematics", "PM"),
+        ("Springer Undergraduate Mathematics Series", "SUMS"),
+        ("Graduate Studies in Mathematics", "GSM"),
+        ("AMS Mathematical Surveys and Monographs", "AMS-MSM"),
+        ("Oxford Graduate Texts in Mathematics", "OGTM"),
+        ("Springer Monographs in Mathematics", "SMM"),
     ];
-    
+
     let mut result = s.to_string();
-    
-    for prefix in &series_prefixes {
-        // Remove prefix followed by dash or space
-        if result.starts_with(prefix) {
-            result = result[prefix.len()..].to_string();
-            // Remove leading dash or space
-            result = result.trim_start_matches(|c: char| c == '-' || c == ' ' || c == ']').to_string();
-            break;
+    let mut series_info = None;
+
+    // Pattern 1: "Series Name Volume - Author - Title"
+    for (series_name, abbr) in &series_mappings {
+        let pattern = format!(r"^{}\s*(\d+)\s*[-\s]", regex::escape(series_name));
+        if let Ok(re) = Regex::new(&pattern) {
+            if let Some(caps) = re.captures(&result) {
+                if let Some(vol) = caps.get(1) {
+                    series_info = Some(format!("{} {}", abbr, vol.as_str()));
+                    result = re.replace(&result, "").to_string();
+                    return (series_info, result.trim().to_string());
+                }
+            }
         }
     }
 
-    // Generic pattern: (Series Name) Author - Title
-    // If it starts with (...), check if the next part looks like an author
-    let re_generic = Regex::new(r"^\s*\(([^)]+)\)\s+(.+)$").unwrap();
-    if let Some(caps) = re_generic.captures(&result) {
-        let _series_part = caps.get(1).map(|m| m.as_str()).unwrap_or("");
-        let rest_part = caps.get(2).map(|m| m.as_str()).unwrap_or("");
-        
-        // Check if 'rest_part' starts with an author
-        // We look for the first separator (- or :) to isolate the potential author
-        let re_sep = Regex::new(r"(?:--|[-:])").unwrap();
-        let potential_author = if let Some(mat) = re_sep.find(rest_part) {
-            &rest_part[..mat.start()]
-        } else {
-            rest_part
-        };
-
-        if is_likely_author(potential_author) {
-            result = rest_part.to_string();
+    // Pattern 2: "Series Name - Author - Title" (no volume number)
+    // Remove series name but don't set series_info
+    for (series_name, _abbr) in &series_mappings {
+        let pattern = format!(r"^{}\s*-\s*", regex::escape(series_name));
+        if let Ok(re) = Regex::new(&pattern) {
+            if re.is_match(&result) {
+                result = re.replace(&result, "").to_string();
+                return (None, result.trim().to_string());
+            }
         }
     }
-    
-    result.trim().to_string()
+
+    // Pattern 3: "(Series Name Volume) Author - Title"
+    let re_paren_series = Regex::new(r"^\s*\(([^)]+?)\s+(\d+)\)\s*").unwrap();
+    if let Some(caps) = re_paren_series.captures(&result) {
+        let series_part = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+        let volume_part = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+
+        // Check if series_part matches known series
+        for (series_name, abbr) in &series_mappings {
+            if series_part.to_lowercase().contains(&series_name.to_lowercase()) {
+                series_info = Some(format!("{} {}", abbr, volume_part));
+                result = re_paren_series.replace(&result, "").to_string();
+                return (series_info, result.trim().to_string());
+            }
+        }
+    }
+
+    // Pattern 4: "[Series Name Volume]" in brackets
+    let re_bracket_series = Regex::new(r"\s*\[([^\]]+?)\s+(\d+)\]").unwrap();
+    if let Some(caps) = re_bracket_series.captures(&result) {
+        let series_part = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+        let volume_part = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+
+        for (series_name, abbr) in &series_mappings {
+            if series_part.to_lowercase().contains(&series_name.to_lowercase()) {
+                series_info = Some(format!("{} {}", abbr, volume_part));
+                result = re_bracket_series.replace(&result, "").to_string();
+                return (series_info, result.trim().to_string());
+            }
+        }
+    }
+
+    (series_info, result.trim().to_string())
 }
+
+fn extract_edition(s: &str) -> (Option<String>, String) {
+    // Patterns: "2nd Edition", "Second Edition", "2nd ed.", "2nd ed", etc.
+    let edition_patterns = [
+        r"(\d+)(?:st|nd|rd|th)\s+[Ee]dition",
+        r"(\d+)(?:st|nd|rd|th)\s+[Ee]d\.?",
+        r"[Ee]dition\s+(\d+)",
+    ];
+
+    let mut result = s.to_string();
+
+    for pattern in &edition_patterns {
+        if let Ok(re) = Regex::new(pattern) {
+            if let Some(caps) = re.captures(&result) {
+                if let Some(num) = caps.get(1) {
+                    let num_str = num.as_str();
+                    let suffix = match num_str {
+                        "1" => "st",
+                        "2" => "nd",
+                        "3" => "rd",
+                        _ => "th",
+                    };
+                    let edition_info = format!("{}{} ed", num_str, suffix);
+                    result = re.replace(&result, "").to_string();
+                    return (Some(edition_info), result.trim().to_string());
+                }
+            }
+        }
+    }
+
+    (None, result.trim().to_string())
+}
+
+fn extract_volume(s: &str) -> (Option<String>, String) {
+    // Patterns: "Vol 2", "Volume 2", "Vol. 2", "Part 2"
+    let volume_patterns = [
+        (r"\bVol\.?\s+(\d+)\b", true),      // Already normalized
+        (r"\bVolume\s+(\d+)\b", false),     // Needs normalization
+        (r"\bPart\s+(\d+)\b", false),       // Needs normalization
+    ];
+
+    for (pattern, already_normalized) in &volume_patterns {
+        if let Ok(re) = Regex::new(pattern) {
+            if let Some(caps) = re.captures(s) {
+                if let Some(num) = caps.get(1) {
+                    let volume_info = format!("Vol {}", num.as_str());
+                    let normalized_text = if !already_normalized {
+                        // Replace "Volume N" or "Part N" with "Vol N"
+                        re.replace(s, &volume_info).to_string()
+                    } else {
+                        s.to_string()
+                    };
+                    return (Some(volume_info), normalized_text);
+                }
+            }
+        }
+    }
+
+    (None, s.to_string())
+}
+
+// Deprecated: remove_series_prefixes is now handled by extract_series_info
 
 fn clean_noise_sources(s: &str) -> String {
     // Remove trailing/embedded source markers comprehensively
@@ -608,15 +710,32 @@ fn clean_orphaned_brackets(s: &str) -> String {
 fn generate_new_filename(metadata: &ParsedMetadata, extension: &str) -> String {
     let mut result = String::new();
 
+    // Author(s)
     if let Some(ref authors) = metadata.authors {
         result.push_str(authors);
         result.push_str(" - ");
     }
 
+    // Title (volume is kept in title if present)
     result.push_str(&metadata.title);
 
-    if let Some(year) = metadata.year {
-        result.push_str(&format!(" ({})", year));
+    // Series info in brackets
+    if let Some(ref series) = metadata.series {
+        result.push_str(&format!(" [{}]", series));
+    }
+
+    // Year and Edition in parentheses
+    match (&metadata.year, &metadata.edition) {
+        (Some(year), Some(edition)) => {
+            result.push_str(&format!(" ({}, {})", year, edition));
+        }
+        (Some(year), None) => {
+            result.push_str(&format!(" ({})", year));
+        }
+        (None, Some(edition)) => {
+            result.push_str(&format!(" ({})", edition));
+        }
+        (None, None) => {}
     }
 
     result.push_str(extension);
@@ -660,6 +779,9 @@ mod tests {
             authors: Some("John Smith".to_string()),
             title: "Great Book".to_string(),
             year: Some(2015),
+            series: None,
+            edition: None,
+            volume: None,
         };
         let new_name = generate_new_filename(&metadata, ".pdf");
         assert_eq!(new_name, "John Smith - Great Book (2015).pdf");
@@ -671,6 +793,9 @@ mod tests {
             authors: Some("Jane Doe".to_string()),
             title: "Another Book".to_string(),
             year: None,
+            series: None,
+            edition: None,
+            volume: None,
         };
         let new_name = generate_new_filename(&metadata, ".pdf");
         assert_eq!(new_name, "Jane Doe - Another Book.pdf");
@@ -980,5 +1105,148 @@ mod tests {
         // Case 2: Website
         let metadata = parse_filename("Title - www.example.com.pdf", ".pdf").unwrap();
         assert!(!metadata.title.contains("www.example.com"));
+    }
+
+    // ========== NEW TESTS FOR SERIES, EDITION, VOLUME ==========
+
+    #[test]
+    fn test_series_extraction_gtm() {
+        let metadata = parse_filename(
+            "Graduate Texts in Mathematics 52 - Saunders Mac Lane - Categories for the Working Mathematician (1978).pdf",
+            ".pdf"
+        ).unwrap();
+        assert_eq!(metadata.authors, Some("Saunders Mac Lane".to_string()));
+        assert_eq!(metadata.title, "Categories for the Working Mathematician");
+        assert_eq!(metadata.series, Some("GTM 52".to_string()));
+        assert_eq!(metadata.year, Some(1978));
+    }
+
+    #[test]
+    fn test_series_extraction_csam_parentheses() {
+        let metadata = parse_filename(
+            "(Cambridge Studies in Advanced Mathematics 218) John Lee - Introduction to Smooth Manifolds (2012).pdf",
+            ".pdf"
+        ).unwrap();
+        assert_eq!(metadata.authors, Some("John Lee".to_string()));
+        assert_eq!(metadata.title, "Introduction to Smooth Manifolds");
+        assert_eq!(metadata.series, Some("CSAM 218".to_string()));
+        assert_eq!(metadata.year, Some(2012));
+    }
+
+    #[test]
+    fn test_edition_detection_2nd() {
+        let metadata = parse_filename(
+            "James Munkres - Topology - 2nd Edition (2000).pdf",
+            ".pdf"
+        ).unwrap();
+        assert_eq!(metadata.authors, Some("James Munkres".to_string()));
+        assert_eq!(metadata.title, "Topology");
+        assert_eq!(metadata.edition, Some("2nd ed".to_string()));
+        assert_eq!(metadata.year, Some(2000));
+    }
+
+    #[test]
+    fn test_edition_detection_3rd_ed() {
+        let metadata = parse_filename(
+            "Walter Rudin - Principles of Mathematical Analysis 3rd ed (1976).pdf",
+            ".pdf"
+        ).unwrap();
+        assert_eq!(metadata.authors, Some("Walter Rudin".to_string()));
+        assert_eq!(metadata.title, "Principles of Mathematical Analysis");
+        assert_eq!(metadata.edition, Some("3rd ed".to_string()));
+        assert_eq!(metadata.year, Some(1976));
+    }
+
+    #[test]
+    fn test_volume_detection() {
+        let metadata = parse_filename(
+            "Michael Spivak - Differential Geometry Vol 2 (1979).pdf",
+            ".pdf"
+        ).unwrap();
+        assert_eq!(metadata.authors, Some("Michael Spivak".to_string()));
+        assert!(metadata.title.contains("Vol 2"));
+        assert_eq!(metadata.volume, Some("Vol 2".to_string()));
+        assert_eq!(metadata.year, Some(1979));
+    }
+
+    #[test]
+    fn test_volume_volume_keyword() {
+        let metadata = parse_filename(
+            "Knuth - The Art of Computer Programming Volume 1.pdf",
+            ".pdf"
+        ).unwrap();
+        assert_eq!(metadata.authors, Some("Knuth".to_string()));
+        assert!(metadata.title.contains("Vol 1"));
+        assert_eq!(metadata.volume, Some("Vol 1".to_string()));
+    }
+
+    #[test]
+    fn test_generate_filename_with_series() {
+        let metadata = ParsedMetadata {
+            authors: Some("Saunders Mac Lane".to_string()),
+            title: "Categories for the Working Mathematician".to_string(),
+            year: Some(1978),
+            series: Some("GTM 52".to_string()),
+            edition: None,
+            volume: None,
+        };
+        let new_name = generate_new_filename(&metadata, ".pdf");
+        assert_eq!(new_name, "Saunders Mac Lane - Categories for the Working Mathematician [GTM 52] (1978).pdf");
+    }
+
+    #[test]
+    fn test_generate_filename_with_edition() {
+        let metadata = ParsedMetadata {
+            authors: Some("James Munkres".to_string()),
+            title: "Topology".to_string(),
+            year: Some(2000),
+            series: None,
+            edition: Some("2nd ed".to_string()),
+            volume: None,
+        };
+        let new_name = generate_new_filename(&metadata, ".pdf");
+        assert_eq!(new_name, "James Munkres - Topology (2000, 2nd ed).pdf");
+    }
+
+    #[test]
+    fn test_generate_filename_with_series_and_edition() {
+        let metadata = ParsedMetadata {
+            authors: Some("John Lee".to_string()),
+            title: "Introduction to Smooth Manifolds".to_string(),
+            year: Some(2012),
+            series: Some("GTM 218".to_string()),
+            edition: Some("2nd ed".to_string()),
+            volume: None,
+        };
+        let new_name = generate_new_filename(&metadata, ".pdf");
+        assert_eq!(new_name, "John Lee - Introduction to Smooth Manifolds [GTM 218] (2012, 2nd ed).pdf");
+    }
+
+    #[test]
+    fn test_generate_filename_with_volume() {
+        let metadata = ParsedMetadata {
+            authors: Some("Michael Spivak".to_string()),
+            title: "Differential Geometry Vol 2".to_string(),
+            year: Some(1979),
+            series: None,
+            edition: None,
+            volume: Some("Vol 2".to_string()),
+        };
+        let new_name = generate_new_filename(&metadata, ".pdf");
+        assert_eq!(new_name, "Michael Spivak - Differential Geometry Vol 2 (1979).pdf");
+    }
+
+    #[test]
+    fn test_comprehensive_all_metadata() {
+        let metadata = ParsedMetadata {
+            authors: Some("Author Name".to_string()),
+            title: "Book Title Vol 3".to_string(),
+            year: Some(2020),
+            series: Some("CSAM 100".to_string()),
+            edition: Some("2nd ed".to_string()),
+            volume: Some("Vol 3".to_string()),
+        };
+        let new_name = generate_new_filename(&metadata, ".pdf");
+        assert_eq!(new_name, "Author Name - Book Title Vol 3 [CSAM 100] (2020, 2nd ed).pdf");
     }
 }

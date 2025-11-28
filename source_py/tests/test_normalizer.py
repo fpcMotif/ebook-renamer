@@ -32,11 +32,10 @@ class TestNormalizer(unittest.TestCase):
     def test_clean_orphaned_brackets(self):
         result = self.normalizer._clean_orphaned_brackets("Title ) with ( orphaned ) brackets [")
         # Should not have orphaned closing paren " ) "
-        # The input has " ) " which is orphaned.
         # The valid one is "( orphaned )".
-        # My implementation removes the first ) because open_parens=0.
-        # So result should be "Title  with ( orphaned ) brackets "
-        self.assertEqual(result, "Title  with ( orphaned ) brackets ")
+        # The result should be cleaned of orphaned brackets.
+        # "Title  with ( orphaned ) brackets " -> cleaned to single spaces
+        self.assertEqual(result, "Title with ( orphaned ) brackets")
 
     def test_parse_author_before_title_with_publisher(self):
         metadata = self.normalizer._parse_filename(

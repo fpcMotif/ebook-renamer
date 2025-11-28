@@ -13,16 +13,9 @@ module EbookRenamer
     # But for simple nesting like ( ... ( ... ) ... ) we can use loop or recursive pattern
     NESTED_PAREN_REGEX = /\([^()]*(?:\([^()]*\)[^()]*)*\)/
     TRAILING_AUTHOR_REGEX = /^(.+?)\s*\(([^)]+)\)\s*$/
-    SEPARATOR_REGEX = /^(.+?)\s*[-:]\s+(.+)$/
-    MULTI_AUTHOR_REGEX = /^([A-Z][^:]+?),\s*([A-Z][^:]+?)\s*[-:]\s+(.+)$/
-
-    SOURCE_INDICATORS = [
-      / - libgen\.li$/, / - libgen$/, / - Z-Library$/, / - z-Library$/,
-      / - Anna's Archive$/, / \(Z-Library\)$/, / \(z-Library\)$/,
-      / \(libgen\.li\)$/, / \(libgen\)$/, / \(Anna's Archive\)$/,
-      / libgen\.li\.pdf$/, / libgen\.pdf$/, / Z-Library\.pdf$/,
-      / z-Library\.pdf$/, / Anna's Archive\.pdf$/
-    ]
+    SEPARATOR_REGEX = /^(.+?)\s*(?:--|[-:])\s+(.+)$/
+    MULTI_AUTHOR_REGEX = /^([A-Z][^:]+?),\s*([A-Z][^:]+?)\s*(?:--|[-:])\s+(.+)$/
+    SEMICOLON_REGEX = /^(.+?)\s*;\s*(.+)$/
 
     NON_AUTHOR_KEYWORDS = [
       "auth.", "translator", "translated by", "z-library", "libgen", "anna's archive", "2-library"
@@ -32,7 +25,15 @@ module EbookRenamer
       "Press", "Publishing", "Academic Press", "Springer", "Cambridge", "Oxford", "MIT Press",
       "Series", "Textbook Series", "Graduate Texts", "Graduate Studies", "Lecture Notes",
       "Pure and Applied", "Mathematics", "Foundations of", "Monographs", "Studies", "Collection",
-      "Textbook", "Edition", "Vol.", "Volume", "No.", "Part", "理工", "出版社", "の"
+      "Textbook", "Edition", "Vol.", "Volume", "No.", "Part", "理工", "出版社", "の",
+      "Z-Library", "libgen", "Anna's Archive"
+    ]
+
+    STRICT_PUBLISHER_KEYWORDS = [
+      "Press", "Publishing", "Springer", "Cambridge", "Oxford", "MIT", "Wiley", "Elsevier",
+      "Routledge", "Pearson", "McGraw", "Addison", "Prentice", "O'Reilly", "Princeton",
+      "Harvard", "Yale", "Stanford", "Chicago", "California", "Columbia", "University",
+      "Verlag", "Birkhäuser", "CUP"
     ]
 
     def normalize_files(files)
@@ -55,33 +56,109 @@ module EbookRenamer
       base = base.chomp(extension)
       base = base.strip
 
-      # Step 2: Clean noise sources
-      base = clean_noise_sources(base)
+      # Step 2: Remove series prefixes
+      base = remove_series_prefixes(base)
 
       # Step 3: Remove ALL bracketed annotations
       base = base.gsub(BRACKET_REGEX, '')
 
-      # Step 4: Extract year FIRST
+      # Step 4: Clean noise sources (MUST happen BEFORE author parsing)
+      base = clean_noise_sources(base)
+
+      # Step 5: Remove duplicate markers
+      base = remove_duplicate_markers(base)
+
+      # Step 6: Extract year FIRST
       year = extract_year(base)
 
-      # Step 5: Remove parentheticals
+      # Step 7: Remove parentheticals
       base = clean_parentheticals(base, year)
 
-      # Step 6: Parse author and title
+      # Step 8: Parse author and title
       authors, title = smart_parse_author_title(base)
 
       ParsedMetadata.new(authors: authors, title: title, year: year)
     end
 
+    def remove_series_prefixes(s)
+      prefixes = [
+        "London Mathematical Society Lecture Note Series",
+        "Graduate Texts in Mathematics",
+        "Progress in Mathematics",
+        "[Springer-Lehrbuch]",
+        "[Graduate studies in mathematics",
+        "[Progress in Mathematics №",
+        "[AMS Mathematical Surveys and Monographs"
+      ]
+
+      result = s
+      prefixes.each do |prefix|
+        if result.start_with?(prefix)
+          result = result[prefix.length..-1]
+          result = result.sub(/^[- ]+/, '')
+          break
+        end
+      end
+
+      # Generic pattern: (Series Name) Author - Title
+      if match = result.match(/^\s*\(([^)]+)\)\s+(.+)$/)
+        rest_part = match[2]
+        # Check if rest_part starts with an author
+        sep_match = rest_part.match(/(?:--|[-:])/)
+        potential_author = sep_match ? rest_part[0...sep_match.begin(0)] : rest_part
+
+        if is_likely_author(potential_author)
+          result = rest_part
+        end
+      end
+
+      result.strip
+    end
+
     def clean_noise_sources(s)
       patterns = [
+        # Z-Library variants
         /\s*[-\(]?\s*[zZ]-?Library(?:\.pdf)?\s*[)\.]?/,
+        /\s*\([zZ]-?Library(?:\.pdf)?\)/,
+        /\s*-\s*[zZ]-?Library(?:\.pdf)?/,
+        # libgen variants
         /\s*[-\(]?\s*libgen(?:\.li)?(?:\.pdf)?\s*[)\.]?/,
-        /\s*[-\(]?\s*Anna'?s?\s+Archive(?:\.pdf)?\s*[)\.]?/
+        /\s*\(libgen(?:\.li)?(?:\.pdf)?\)/,
+        /\s*-\s*libgen(?:\.li)?(?:\.pdf)?/,
+        # Anna's Archive variants
+        /Anna'?s?\s*Archive/,
+        /\s*[-\(]?\s*Anna'?s?\s+Archive(?:\.pdf)?\s*[)\.]?/,
+        /\s*\(Anna'?s?\s+Archive(?:\.pdf)?\)/,
+        /\s*-\s*Anna'?s?\s+Archive(?:\.pdf)?/,
+        # Hash patterns
+        /\s*--\s*[a-f0-9]{32}\s*(?:--)?/,
+        /\s*--\s*\d{10,13}\s*(?:--)?/,
+        /\s*--\s*[A-Za-z0-9]{16,}\s*(?:--)?/,
+        /\s*--\s*[a-f0-9]{8,}\s*(?:--)?/,
+        # "Uploaded by"
+        /\s*[-\(]?\s*[Uu]ploaded by\s+[^)\-]+[)\.]?/,
+        /\s*-\s*[Uu]ploaded by\s+[^)\-]+/,
+        # "Via ..."
+        /\s*[-\(]?\s*[Vv]ia\s+[^)\-]+[)\.]?/,
+        # Website URLs
+        /\s*[-\(]?\s*w{3}\.[a-zA-Z0-9-]+\.[a-z]{2,}\s*[)\.]?/,
+        /\s*[-\(]?\s*[a-zA-Z0-9-]+\.(?:com|org|net|edu|io)\s*[)\.]?/
       ]
+
       result = s
-      patterns.each { |p| result = result.gsub(p, '') }
+      3.times do
+        before = result
+        patterns.each { |p| result = result.gsub(p, '') }
+        break if result == before
+      end
       result.strip
+    end
+
+    def remove_duplicate_markers(s)
+      s = s.sub(/[-\s]*\(\d{1,2}\)\s*$/, '') # (1), (2) at end
+      s = s.sub(/-\d{1,2}\s*$/, '')          # -2, -3 at end
+      s = s.sub(/(-\d{1,2})(\s+\()/, ' (')   # -2 before (year)
+      s
     end
 
     def extract_year(s)
@@ -148,6 +225,14 @@ module EbookRenamer
         end
       end
 
+      # Pattern 4: Title; Author
+      if match = s.match(SEMICOLON_REGEX)
+        title_part, author_part = match.captures
+        if is_likely_author(author_part) && !is_publisher_or_series_info(author_part)
+          return [clean_author_name(author_part), clean_title(title_part)]
+        end
+      end
+
       [nil, clean_title(s)]
     end
 
@@ -159,7 +244,7 @@ module EbookRenamer
       return false if NON_AUTHOR_KEYWORDS.any? { |k| s_lower.include?(k) }
 
       # Check if digits only
-      return false if s.match?(/^[\d\-_]+$/)
+      return false if s.match?(/^[0-9\-_]+$/)
 
       # Check if name-like (uppercase Latin OR non-Latin letter)
       has_uppercase = s.match?(/[A-Z]/)
@@ -169,7 +254,11 @@ module EbookRenamer
     end
 
     def clean_author_name(s)
-      s = s.strip.gsub(AUTH_REGEX, '')
+      s = s.strip
+      noise_patterns = [
+        /\s*\(auth\.?\)/, /\s*\(author\)/, /\s*\(eds?\.?\)/, /\s*\(translator\)/
+      ]
+      noise_patterns.each { |p| s = s.gsub(p, '') }
 
       comma_count = s.count(',')
       if comma_count == 1
@@ -188,8 +277,27 @@ module EbookRenamer
     def clean_title(s)
       s = s.strip
       s = clean_noise_sources(s)
-      s = s.gsub(AUTH_REGEX, '')
+      s = s.gsub(/\s*\([Aa]uth\.?\)/, '')
       s = s.gsub(TRAILING_ID_REGEX, '')
+
+      # Remove trailing publisher info separated by dash
+      if idx = s.rindex(" - ")
+        suffix = s[idx+3..-1]
+        if is_publisher_or_series_info(suffix)
+          s = s[0...idx]
+        end
+      end
+
+      # Handle just "-" without spaces if it looks like publisher
+      if idx = s.rindex('-')
+        if idx > 0 && idx < s.length - 1
+          suffix = s[idx+1..-1].strip
+          if STRICT_PUBLISHER_KEYWORDS.any? { |k| suffix.include?(k) }
+            s = s[0...idx]
+          end
+        end
+      end
+
       s = clean_orphaned_brackets(s)
       s = s.gsub(SPACE_REGEX, ' ')
       s.gsub(/^[-:;,\.]+|[-:;,\.]+$/, '').strip
@@ -198,6 +306,9 @@ module EbookRenamer
     def is_publisher_or_series_info(s)
       return true if PUBLISHER_KEYWORDS.any? { |k| s.include?(k) }
 
+      return true if s.match?(/[a-f0-9]{8,}/) && s.length > 8
+      return true if s.match?(/[A-Za-z0-9]{16,}/) && s.length > 16
+
       has_numbers = s.match?(/\d/)
       non_letter_count = s.scan(/[^a-zA-Z ]/).length
       
@@ -205,41 +316,51 @@ module EbookRenamer
     end
 
     def clean_orphaned_brackets(s)
-      result = ""
-      open_parens = 0
-      open_brackets = 0
+      # We need to remove unclosed OPEN brackets.
+      # Ruby strings are mutable or we can use an array of chars.
+      chars = s.chars
+      result_chars = []
+      open_parens_indices = []
+      open_brackets_indices = []
 
-      s.each_char do |char|
+      chars.each do |char|
         case char
         when '('
-          open_parens += 1
-          result << char
+          open_parens_indices << result_chars.length
+          result_chars << char
         when ')'
-          if open_parens > 0
-            open_parens -= 1
-            result << char
+          if !open_parens_indices.empty?
+            open_parens_indices.pop
+            result_chars << char
+          else
+            # Orphaned closing paren -> space
+            result_chars << ' '
           end
         when '['
-          open_brackets += 1
-          result << char
+          open_brackets_indices << result_chars.length
+          result_chars << char
         when ']'
-          if open_brackets > 0
-            open_brackets -= 1
-            result << char
+          if !open_brackets_indices.empty?
+            open_brackets_indices.pop
+            result_chars << char
+          else
+            # Orphaned closing bracket -> space
+            result_chars << ' '
           end
         when '_'
-          result << ' '
+          result_chars << ' '
         else
-          result << char
+          result_chars << char
         end
       end
 
-      # Remove trailing orphaned opening brackets
-      while result.end_with?('(') || result.end_with?('[')
-        result = result[0...-1]
+      # Remove unclosed opening brackets
+      indices_to_remove = (open_parens_indices + open_brackets_indices).sort.reverse
+      indices_to_remove.each do |idx|
+        result_chars.delete_at(idx) if idx < result_chars.length
       end
-      
-      result
+
+      result_chars.join
     end
 
     def generate_new_filename(metadata, extension)
@@ -252,4 +373,3 @@ module EbookRenamer
     end
   end
 end
-

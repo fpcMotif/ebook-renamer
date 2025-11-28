@@ -18,8 +18,8 @@ var allowedExtensions = map[string]bool{
 	".txt":  true,
 }
 
-// DetectDuplicates finds duplicate files based on MD5 hash
-func DetectDuplicates(files []*types.FileInfo) ([][]string, []*types.FileInfo, error) {
+// DetectDuplicates finds duplicate files based on MD5 hash or filename
+func DetectDuplicates(files []*types.FileInfo, skipHash bool) ([][]string, []*types.FileInfo, error) {
 	// Filter to only allowed formats first
 	var filteredFiles []*types.FileInfo
 	for _, file := range files {
@@ -28,17 +28,48 @@ func DetectDuplicates(files []*types.FileInfo) ([][]string, []*types.FileInfo, e
 		}
 	}
 
-	// Build hash map: file_hash -> list of file infos
+	// Build hash map: key -> list of file infos
+	// Key is either MD5 hash or normalized filename depending on skipHash
 	hashMap := make(map[string][]*types.FileInfo)
 
-	for _, fileInfo := range filteredFiles {
-		if !fileInfo.IsFailedDownload && !fileInfo.IsTooSmall {
-			hash, err := computeMD5(fileInfo.OriginalPath)
-			if err != nil {
-				// Skip files that can't be read
+	if skipHash {
+		// Use filename-based deduplication
+		for _, fileInfo := range filteredFiles {
+			if !fileInfo.IsFailedDownload && !fileInfo.IsTooSmall {
+				// Use new_name if available, otherwise original_name
+				key := fileInfo.OriginalName
+				if fileInfo.NewName != nil {
+					key = *fileInfo.NewName
+				}
+				hashMap[key] = append(hashMap[key], fileInfo)
+			}
+		}
+	} else {
+		// Optimization: Group by size first
+		// Only compute MD5 for files that have the same size
+		sizeMap := make(map[uint64][]*types.FileInfo)
+
+		for _, fileInfo := range filteredFiles {
+			if !fileInfo.IsFailedDownload && !fileInfo.IsTooSmall {
+				sizeMap[fileInfo.Size] = append(sizeMap[fileInfo.Size], fileInfo)
+			}
+		}
+
+		for _, filesWithSameSize := range sizeMap {
+			// If only one file has this size, it cannot be a duplicate
+			if len(filesWithSameSize) == 1 {
 				continue
 			}
-			hashMap[hash] = append(hashMap[hash], fileInfo)
+
+			// Multiple files with same size, compute hashes
+			for _, fileInfo := range filesWithSameSize {
+				hash, err := computeMD5(fileInfo.OriginalPath)
+				if err != nil {
+					// Skip files that can't be read
+					continue
+				}
+				hashMap[hash] = append(hashMap[hash], fileInfo)
+			}
 		}
 	}
 

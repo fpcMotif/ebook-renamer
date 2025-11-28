@@ -15,25 +15,51 @@ class DuplicateDetector:
     # Allowed formats to keep
     ALLOWED_EXTENSIONS = {".pdf", ".epub", ".txt"}
     
-    def detect_duplicates(self, files: List[FileInfo]) -> Tuple[List[List[str]], List[FileInfo]]:
-        """Find duplicate files based on MD5 hash."""
+    def detect_duplicates(self, files: List[FileInfo], skip_hash: bool = False) -> Tuple[List[List[str]], List[FileInfo]]:
+        """Find duplicate files based on MD5 hash or filename."""
         # Filter to only allowed formats first
-        filtered_files = [file for file in files 
+        filtered_files = [file for file in files
                          if file.extension in self.ALLOWED_EXTENSIONS]
-        
-        # Build hash map: file_hash -> list of file infos
+
+        # Build hash map: key -> list of file infos
+        # Key is either MD5 hash or normalized filename depending on skip_hash
         hash_map = {}
-        
-        for file_info in filtered_files:
-            if not file_info.is_failed_download and not file_info.is_too_small:
-                try:
-                    file_hash = self._compute_md5(file_info.original_path)
-                    if file_hash not in hash_map:
-                        hash_map[file_hash] = []
-                    hash_map[file_hash].append(file_info)
-                except (OSError, IOError):
-                    # Skip files that can't be read
+
+        if skip_hash:
+            # Use filename-based deduplication
+            for file_info in filtered_files:
+                if not file_info.is_failed_download and not file_info.is_too_small:
+                    # Use new_name if available, otherwise original_name
+                    key = file_info.new_name if file_info.new_name else file_info.original_name
+                    if key not in hash_map:
+                        hash_map[key] = []
+                    hash_map[key].append(file_info)
+        else:
+            # Optimization: Group by size first
+            # Only compute MD5 for files that have the same size
+            size_map = {}
+
+            for file_info in filtered_files:
+                if not file_info.is_failed_download and not file_info.is_too_small:
+                    if file_info.size not in size_map:
+                        size_map[file_info.size] = []
+                    size_map[file_info.size].append(file_info)
+
+            for files_with_same_size in size_map.values():
+                # If only one file has this size, it cannot be a duplicate
+                if len(files_with_same_size) == 1:
                     continue
+
+                # Multiple files with same size, compute hashes
+                for file_info in files_with_same_size:
+                    try:
+                        file_hash = self._compute_md5(file_info.original_path)
+                        if file_hash not in hash_map:
+                            hash_map[file_hash] = []
+                        hash_map[file_hash].append(file_info)
+                    except (OSError, IOError):
+                        # Skip files that can't be read
+                        continue
         
         # Group duplicates by hash and apply retention strategy
         duplicate_groups = []

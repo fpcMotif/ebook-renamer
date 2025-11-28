@@ -55,22 +55,68 @@ module EbookRenamer
       base = base.chomp(extension)
       base = base.strip
 
-      # Step 2: Clean noise sources
+      # Step 2: Remove series prefixes (must be early)
+      base = remove_series_prefixes(base)
+
+      # Step 3: Clean noise sources
       base = clean_noise_sources(base)
 
-      # Step 3: Remove ALL bracketed annotations
+      # Step 4: Remove ALL bracketed annotations
       base = base.gsub(BRACKET_REGEX, '')
 
-      # Step 4: Extract year FIRST
+      # Step 5: Extract year FIRST
       year = extract_year(base)
 
-      # Step 5: Remove parentheticals
+      # Step 6: Remove parentheticals
       base = clean_parentheticals(base, year)
 
-      # Step 6: Parse author and title
+      # Step 7: Parse author and title
       authors, title = smart_parse_author_title(base)
 
       ParsedMetadata.new(authors: authors, title: title, year: year)
+    end
+
+    def remove_series_prefixes(s)
+      prefixes = [
+        "London Mathematical Society Lecture Note Series",
+        "Graduate Texts in Mathematics",
+        "Progress in Mathematics",
+        "[Springer-Lehrbuch]",
+        "[Graduate studies in mathematics",
+        "[Progress in Mathematics №",
+        "[AMS Mathematical Surveys and Monographs"
+      ]
+
+      result = s
+      prefixes.each do |prefix|
+        if result.start_with?(prefix)
+          result = result[prefix.length..-1]
+          result = result.sub(/^[- \]]+/, '')
+          break
+        end
+      end
+
+      # Generic pattern: (Series Name) Author - Title
+      # If it starts with (...), check if the next part looks like an author
+      generic_match = result.match(/^\s*\(([^)]+)\)\s+(.+)$/)
+      if generic_match
+        # series_part = generic_match[1]
+        rest_part = generic_match[2]
+
+        # Check if 'rest_part' starts with an author
+        # We look for the first separator (- or :) to isolate the potential author
+        sep_match = rest_part.match(/(?:--|[-:])/)
+        potential_author = rest_part
+        if sep_match
+          potential_author = rest_part[0...sep_match.begin(0)]
+        end
+
+        if is_likely_author(potential_author)
+          result = rest_part
+        end
+      end
+
+      result.strip
     end
 
     def clean_noise_sources(s)
@@ -190,6 +236,27 @@ module EbookRenamer
       s = clean_noise_sources(s)
       s = s.gsub(AUTH_REGEX, '')
       s = s.gsub(TRAILING_ID_REGEX, '')
+
+      # Remove trailing publisher info separated by dash
+      # e.g. "Title - Publisher"
+      if idx = s.rindex(' - ')
+        suffix = s[(idx + 3)..-1]
+        if is_publisher_or_series_info(suffix)
+          s = s[0...idx]
+        end
+      end
+
+      # Also handle just "-" without spaces if it looks like publisher
+      if idx = s.rindex('-')
+        if idx > 0 && idx < s.length - 1
+          suffix = s[(idx + 1)..-1].strip
+          # Use stricter check for non-spaced dash to avoid stripping parts of title
+          if is_strict_publisher_info(suffix)
+            s = s[0...idx]
+          end
+        end
+      end
+
       s = clean_orphaned_brackets(s)
       s = s.gsub(SPACE_REGEX, ' ')
       s.gsub(/^[-:;,\.]+|[-:;,\.]+$/, '').strip
@@ -200,8 +267,19 @@ module EbookRenamer
 
       has_numbers = s.match?(/\d/)
       non_letter_count = s.scan(/[^a-zA-Z ]/).length
-      
+
       has_numbers && non_letter_count > 2
+    end
+
+    def is_strict_publisher_info(s)
+      strict_keywords = [
+        "Press", "Publishing", "Springer", "Cambridge", "Oxford", "MIT",
+        "Wiley", "Elsevier", "Routledge", "Pearson", "McGraw", "Addison",
+        "Prentice", "O'Reilly", "Princeton", "Harvard", "Yale", "Stanford",
+        "Chicago", "California", "Columbia", "University", "Verlag", "Birkhäuser", "CUP"
+      ]
+
+      strict_keywords.any? { |k| s.include?(k) }
     end
 
     def clean_orphaned_brackets(s)

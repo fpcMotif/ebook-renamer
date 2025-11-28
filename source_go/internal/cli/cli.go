@@ -35,6 +35,7 @@ var (
 	deleteSmallFlag     bool
 	autoCleanupFlag     bool
 	jsonFlag            bool
+	skipCloudHashFlag   bool
 )
 
 var rootCmd = &cobra.Command{
@@ -66,6 +67,7 @@ func init() {
 	rootCmd.Flags().BoolVar(&deleteSmallFlag, "delete-small", false, "Delete small/corrupted files (< 1KB) instead of adding to todo list")
 	rootCmd.Flags().BoolVar(&autoCleanupFlag, "auto-cleanup", false, "Automatically clean up incomplete downloads (.download/.crdownload) and corrupted files")
 	rootCmd.Flags().BoolVar(&jsonFlag, "json", false, "Output operations in JSON format instead of human-readable text")
+	rootCmd.Flags().BoolVar(&skipCloudHashFlag, "skip-cloud-hash", false, "Skip MD5 hash computation for duplicate detection (useful for cloud storage like Dropbox to avoid triggering file downloads)")
 }
 
 func Execute() error {
@@ -145,6 +147,7 @@ func runEbookRenamer(cmd *cobra.Command, args []string) error {
 		DeleteSmall:     deleteSmallFlag,
 		AutoCleanup:     autoCleanupFlag,
 		Json:            jsonFlag,
+		SkipCloudHash:   skipCloudHashFlag,
 	}
 
 	log.Printf("Starting ebook renamer with config: %+v", config)
@@ -319,7 +322,7 @@ func processFiles(config *types.Config) error {
 	}
 
 	// Detect duplicates
-	duplicateGroups, cleanFiles, err := duplicates.DetectDuplicates(normalized)
+	duplicateGroups, cleanFiles, err := duplicates.DetectDuplicates(normalized, skipCloudHashFlag)
 	if err != nil {
 		return fmt.Errorf("duplicate detection failed: %w", err)
 	}

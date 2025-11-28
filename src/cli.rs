@@ -123,6 +123,22 @@ pub struct Args {
         help = "Automatically remove empty .download/.crdownload folders after extracting PDFs"
     )]
     pub cleanup_downloads: bool,
+
+    /// Cloud provider to use (dropbox, gdrive)
+    #[arg(
+        long,
+        value_name = "PROVIDER",
+        help = "Cloud provider to use (dropbox, gdrive). If set, operates on cloud files instead of local."
+    )]
+    pub cloud_provider: Option<String>,
+
+    /// Access token or credentials file for cloud provider
+    #[arg(
+        long,
+        value_name = "TOKEN/FILE",
+        help = "Access token (Dropbox) or credentials file (Google Drive). If not provided, will look for environment variables."
+    )]
+    pub cloud_secret: Option<String>,
 }
 
 impl Args {
@@ -165,6 +181,8 @@ mod tests {
             json: false,
             skip_cloud_hash: false,
             cleanup_downloads: false,
+            cloud_provider: None,
+            cloud_secret: None,
         };
 
         let exts = args.get_extensions();
@@ -193,6 +211,8 @@ mod tests {
             json: false,
             skip_cloud_hash: false,
             cleanup_downloads: false,
+            cloud_provider: None,
+            cloud_secret: None,
         };
 
         let exts = args.get_extensions();
@@ -220,6 +240,8 @@ mod tests {
             json: false,
             skip_cloud_hash: false,
             cleanup_downloads: false,
+            cloud_provider: None,
+            cloud_secret: None,
         };
 
         let exts = args.get_extensions();

@@ -6,13 +6,15 @@ mod cli;
 mod json_output;
 mod download_recovery;
 mod tui;
+mod cloud;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use clap::Parser;
 use cli::Args;
-use log::info;
+use log::{info, warn};
 use download_recovery::DownloadRecovery;
 use colored::*;
+use crate::cloud::{CloudFile, CloudProvider, dropbox::DropboxProvider, gdrive::GDriveProvider};
 
 fn main() -> Result<()> {
     env_logger::Builder::from_default_env()
@@ -21,6 +23,11 @@ fn main() -> Result<()> {
 
     let args = Args::parse();
     info!("Starting ebook renamer with args: {:?}", args);
+
+    // Handle Cloud Mode
+    if let Some(ref provider_name) = args.cloud_provider {
+        return run_cloud_mode(&args, provider_name);
+    }
 
     // Handle --fetch-arxiv placeholder
     if args.fetch_arxiv {
@@ -252,5 +259,176 @@ fn main() -> Result<()> {
             "Operation completed successfully!".bright_green().bold()
         );
     }
+    Ok(())
+}
+
+fn run_cloud_mode(args: &Args, provider_name: &str) -> Result<()> {
+    println!("{}", format!("☁️  Running in Cloud Mode: {}", provider_name).blue().bold());
+
+    let token = args.cloud_secret.clone().or_else(|| {
+        match provider_name {
+            "dropbox" => std::env::var("DROPBOX_ACCESS_TOKEN").ok(),
+            "gdrive" => std::env::var("GDRIVE_ACCESS_TOKEN").ok(), // Simplified for now, usually needs JSON creds
+            _ => None
+        }
+    }).ok_or_else(|| anyhow!("No credentials found. Provide --cloud-secret or set env vars."))?;
+
+    let provider: Box<dyn CloudProvider> = match provider_name {
+        "dropbox" => Box::new(DropboxProvider::new(token)),
+        "gdrive" => Box::new(GDriveProvider::new(token)),
+        _ => return Err(anyhow!("Unknown cloud provider: {}", provider_name)),
+    };
+
+    println!("Scanning files in {}...", args.path.display());
+    let cloud_files = provider.list_files(args.path.to_str().unwrap_or("."))?;
+    info!("Found {} files in cloud", cloud_files.len());
+
+    // Create map for hash lookup
+    let mut path_to_hash = std::collections::HashMap::new();
+    for cf in &cloud_files {
+        if let Some(ref h) = cf.hash {
+            path_to_hash.insert(cf.path.clone(), h.clone());
+            // Also map ID if different (for GDrive)
+            if cf.id != cf.path {
+                path_to_hash.insert(cf.id.clone(), h.clone());
+            }
+        }
+    }
+
+    let mut file_infos: Vec<scanner::FileInfo> = cloud_files.iter().map(|cf| cf.to_file_info()).collect();
+
+    // Filter by extensions
+    let allowed_extensions = args.get_extensions();
+    file_infos.retain(|f| allowed_extensions.contains(&f.extension));
+    info!("Filtered to {} files based on extensions", file_infos.len());
+
+    // Normalize
+    let normalized = normalizer::normalize_files(file_infos)?;
+
+    // Detect Duplicates (using hash if available, else relying on filename)
+
+    let mut seen_names = std::collections::HashMap::new();
+    let mut seen_target_names = std::collections::HashSet::new();
+
+    // Populate seen_target_names with existing filenames in cloud to detect collisions
+    for file in &normalized {
+        seen_target_names.insert(file.original_name.to_lowercase());
+    }
+
+    let mut duplicates: Vec<(&scanner::FileInfo, String)> = Vec::new(); // Store file and new unique name
+    let mut to_rename: Vec<(&scanner::FileInfo, String)> = Vec::new(); // Store file and new name
+
+    for file in &normalized {
+        let file_hash = path_to_hash.get(&file.original_path.to_string_lossy().to_string());
+
+        let key = if !args.skip_cloud_hash && file_hash.is_some() {
+             // Use Content Hash if available and not skipped
+             format!("hash::{}", file_hash.unwrap())
+        } else {
+             // Fallback to Filename (as per user request snippet)
+             file.original_name.to_lowercase()
+        };
+
+        let is_duplicate = seen_names.contains_key(&key);
+
+        if is_duplicate {
+             // Active Deduplication: Rename with suffix
+             let base_name = std::path::Path::new(&file.original_name)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("unknown");
+             let ext = &file.extension;
+
+             let mut unique_name = format!("{}_unique{}", base_name, ext);
+             let mut counter = 1;
+             while seen_target_names.contains(&unique_name.to_lowercase()) {
+                 unique_name = format!("{}_unique_{}{}", base_name, counter, ext);
+                 counter += 1;
+             }
+
+             seen_target_names.insert(unique_name.to_lowercase());
+             duplicates.push((file, unique_name));
+
+        } else {
+            seen_names.insert(key, file.original_path.clone());
+
+            if let Some(target_name) = &file.new_name {
+                let mut final_target_name = target_name.clone();
+
+                // Check if this rename targets an existing file (Collision)
+                // Note: file.original_name is in seen_target_names, so we check if target != original
+                if final_target_name.to_lowercase() != file.original_name.to_lowercase() && seen_target_names.contains(&final_target_name.to_lowercase()) {
+                     // Collision detected, append suffix
+                     let base_name = std::path::Path::new(target_name)
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("unknown");
+                     let ext = &file.extension; // normalization usually preserves extension
+
+                     let mut counter = 2;
+                     while seen_target_names.contains(&final_target_name.to_lowercase()) {
+                         final_target_name = format!("{} ({}){}", base_name, counter, ext);
+                         counter += 1;
+                     }
+                }
+
+                if final_target_name != file.original_name {
+                    seen_target_names.insert(final_target_name.to_lowercase());
+                    to_rename.push((file, final_target_name));
+                }
+            }
+        }
+    }
+
+    if args.dry_run {
+         println!("\n{}", "═══ DRY RUN MODE (CLOUD) ═══".bold().bright_blue());
+         for (file, new_name) in &to_rename {
+             println!("{} {} {} {}",
+                "RENAME:".green().bold(),
+                file.original_name.bright_white(),
+                "→".bright_blue().bold(),
+                new_name.bright_cyan()
+            );
+         }
+         for (file, unique_name) in &duplicates {
+             println!("{} {} {} {}",
+                "DUPLICATE (RENAME):".yellow().bold(),
+                file.original_name.bright_white(),
+                "→".bright_blue().bold(),
+                unique_name.bright_cyan()
+             );
+         }
+    } else {
+        // Combine all operations
+        let mut all_ops = to_rename;
+        all_ops.extend(duplicates);
+
+        for (file, new_name) in all_ops {
+             // We need to map FileInfo back to CloudFile id to rename?
+             // FileInfo.original_path holds the path/id.
+             // We can reconstruct a temporary CloudFile or adjust provider signature.
+             // Provider expects CloudFile.
+             let cf = CloudFile {
+                 id: file.original_path.to_string_lossy().to_string(), // For GDrive, path is ID. For Dropbox, it's path.
+                 path: file.original_path.to_string_lossy().to_string(),
+                 name: file.original_name.clone(),
+                 hash: None,
+                 size: file.size,
+                 modified_time: file.modified_time,
+                 provider: provider_name.to_string(),
+             };
+
+             match provider.rename_file(&cf, &new_name) {
+                 Ok(_) => info!("Renamed {} to {}", file.original_name, new_name),
+                 Err(e) => warn!("Failed to rename {}: {}", file.original_name, e),
+             }
+        }
+    }
+
+    println!("\n{} {}",
+            "✓".green().bold(),
+            "Cloud operation completed!".bright_green().bold()
+    );
+
     Ok(())
 }

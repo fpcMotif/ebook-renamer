@@ -1,18 +1,41 @@
-mod scanner;
-mod normalizer;
-mod duplicates;
-mod todo;
 mod cli;
-mod json_output;
 mod download_recovery;
+mod duplicates;
+mod json_output;
+mod normalizer;
+mod scanner;
+mod todo;
 mod tui;
 
 use anyhow::Result;
 use clap::Parser;
-use cli::Args;
-use log::info;
-use download_recovery::DownloadRecovery;
+use cli::{Args, CloudMode};
 use colored::*;
+use download_recovery::DownloadRecovery;
+use log::{info, warn};
+use scanner::detect_virtual_mount;
+
+pub(crate) fn compute_cloud_mode(args: &Args) -> CloudMode {
+    if let Some(mode) = args.cloud_mode {
+        return mode;
+    }
+
+    if args.skip_cloud_hash {
+        warn!(
+            "--skip-cloud-hash is deprecated in favor of --cloud-mode; defaulting to metadata mode"
+        );
+        return CloudMode::Metadata;
+    }
+
+    if detect_virtual_mount(&args.path) {
+        warn!(
+            "Detected virtual/remote mount, defaulting to metadata cloud mode to avoid downloads"
+        );
+        return CloudMode::Metadata;
+    }
+
+    CloudMode::Local
+}
 
 fn main() -> Result<()> {
     env_logger::Builder::from_default_env()
@@ -22,12 +45,36 @@ fn main() -> Result<()> {
     let args = Args::parse();
     info!("Starting ebook renamer with args: {:?}", args);
 
+    let cloud_mode = compute_cloud_mode(&args);
+
     // Handle --fetch-arxiv placeholder
     if args.fetch_arxiv {
-        println!("{} {}", 
+        println!(
+            "{} {}",
             "⚠️  Warning:".yellow().bold(),
             "--fetch-arxiv is not implemented yet. Files will be processed offline only.".yellow()
         );
+    }
+
+    if !args.json {
+        match cloud_mode {
+            CloudMode::Metadata => println!(
+                "{} {}",
+                "⚠️  Cloud:".yellow().bold(),
+                "Metadata-only mode enabled: duplicate detection will use normalized name + size without local hashing".yellow()
+            ),
+            CloudMode::Api => println!(
+                "{} {}",
+                "⚠️  Cloud:".yellow().bold(),
+                "API mode enabled: expecting provider hashes (Dropbox content_hash, Google Drive md5Checksum) before local hashing".yellow()
+            ),
+            CloudMode::Hybrid => println!(
+                "{} {}",
+                "⚠️  Cloud:".yellow().bold(),
+                "Hybrid mode enabled: will prefer provider hashes or metadata on virtual mounts before computing local hashes".yellow()
+            ),
+            CloudMode::Local => {}
+        }
     }
 
     if !args.json {
@@ -37,19 +84,26 @@ fn main() -> Result<()> {
     // Step 1: Recover downloads from .download/.crdownload folders
     let recovery = DownloadRecovery::new(&args.path, args.cleanup_downloads);
     let recovery_result = recovery.recover_downloads()?;
-    
+
     if !recovery_result.extracted_files.is_empty() {
-        info!("Recovered {} PDFs from download folders", recovery_result.extracted_files.len());
+        info!(
+            "Recovered {} PDFs from download folders",
+            recovery_result.extracted_files.len()
+        );
         if args.dry_run && !args.json {
-            println!("{} Recovered {} PDFs from download folders", 
+            println!(
+                "{} Recovered {} PDFs from download folders",
                 "✓".green().bold(),
                 recovery_result.extracted_files.len().to_string().cyan()
             );
         }
     }
-    
+
     if !recovery_result.errors.is_empty() {
-        info!("Encountered {} errors during download recovery", recovery_result.errors.len());
+        info!(
+            "Encountered {} errors during download recovery",
+            recovery_result.errors.len()
+        );
         if args.dry_run && !args.json {
             for error in &recovery_result.errors {
                 println!("{}  {}", "⚠️".yellow(), error.yellow());
@@ -59,7 +113,7 @@ fn main() -> Result<()> {
 
     // Handle --no-recursive by setting max_depth to 1
     let effective_max_depth = if args.no_recursive { 1 } else { args.max_depth };
-    
+
     let mut scanner = scanner::Scanner::new(&args.path, effective_max_depth)?;
     let files = scanner.scan()?;
     info!("Found {} files to process", files.len());
@@ -72,7 +126,7 @@ fn main() -> Result<()> {
     let mut todo_list = todo::TodoList::new(&args.todo_file, &args.path)?;
     let mut files_to_delete = Vec::new();
     let mut todo_items = Vec::new();
-    
+
     for file_info in &normalized {
         // Add existing failed/too small files
         if file_info.is_failed_download || file_info.is_too_small {
@@ -86,23 +140,51 @@ fn main() -> Result<()> {
                 files_to_delete.push(file_info.original_path.clone());
 
                 // Collect todo item for JSON output
-                let category = if file_info.is_failed_download { "failed_download" } else { "too_small" };
-                let message = if file_info.is_failed_download {
-                    format!("Redownload: {} (Unfinished download)", file_info.original_name)
+                let category = if file_info.is_failed_download {
+                    "failed_download"
                 } else {
-                    format!("Check and redownload: {} (File too small, only {} bytes)", file_info.original_name, file_info.size)
+                    "too_small"
                 };
-                todo_items.push((category.to_string(), file_info.original_name.clone(), message));
+                let message = if file_info.is_failed_download {
+                    format!(
+                        "Redownload: {} (Unfinished download)",
+                        file_info.original_name
+                    )
+                } else {
+                    format!(
+                        "Check and redownload: {} (File too small, only {} bytes)",
+                        file_info.original_name, file_info.size
+                    )
+                };
+                todo_items.push((
+                    category.to_string(),
+                    file_info.original_name.clone(),
+                    message,
+                ));
             } else {
                 todo_list.add_failed_download(file_info)?;
                 // Collect todo item for JSON output
-                let category = if file_info.is_failed_download { "failed_download" } else { "too_small" };
-                let message = if file_info.is_failed_download {
-                    format!("Redownload: {} (Unfinished download)", file_info.original_name)
+                let category = if file_info.is_failed_download {
+                    "failed_download"
                 } else {
-                    format!("Check and redownload: {} (File too small, only {} bytes)", file_info.original_name, file_info.size)
+                    "too_small"
                 };
-                todo_items.push((category.to_string(), file_info.original_name.clone(), message));
+                let message = if file_info.is_failed_download {
+                    format!(
+                        "Redownload: {} (Unfinished download)",
+                        file_info.original_name
+                    )
+                } else {
+                    format!(
+                        "Check and redownload: {} (File too small, only {} bytes)",
+                        file_info.original_name, file_info.size
+                    )
+                };
+                todo_items.push((
+                    category.to_string(),
+                    file_info.original_name.clone(),
+                    message,
+                ));
             }
         } else {
             // Analyze file integrity for all other files
@@ -110,12 +192,18 @@ fn main() -> Result<()> {
         }
     }
 
-    // Detect duplicates (skip if cloud storage mode)
-    let (duplicate_groups, clean_files) = duplicates::detect_duplicates(normalized, args.skip_cloud_hash)?;
-    if args.skip_cloud_hash {
-        info!("Skipped duplicate detection (cloud storage mode)");
-    } else {
-        info!("Detected {} duplicate groups", duplicate_groups.len());
+    // Detect duplicates respecting cloud mode
+    let (duplicate_groups, clean_files) = duplicates::detect_duplicates(normalized, cloud_mode)?;
+    match cloud_mode {
+        CloudMode::Metadata => info!(
+            "Metadata-only duplicate grouping produced {} groups",
+            duplicate_groups.len()
+        ),
+        _ => info!(
+            "Detected {} duplicate groups using {:?} mode",
+            duplicate_groups.len(),
+            cloud_mode
+        ),
     }
 
     // Show or execute renames
@@ -133,12 +221,13 @@ fn main() -> Result<()> {
         } else {
             // Human-readable output with rich text
             println!("\n{}", "═══ DRY RUN MODE ═══".bold().bright_blue());
-            
+
             if !clean_files.is_empty() {
                 let mut rename_count = 0;
                 for file_info in &clean_files {
                     if let Some(ref new_name) = file_info.new_name {
-                        println!("{} {} {} {}", 
+                        println!(
+                            "{} {} {} {}",
                             "RENAME:".green().bold(),
                             file_info.original_name.bright_white(),
                             "→".bright_blue().bold(),
@@ -148,24 +237,27 @@ fn main() -> Result<()> {
                     }
                 }
                 if rename_count > 0 {
-                    println!("\n{} {} files to rename", 
+                    println!(
+                        "\n{} {} files to rename",
                         "📝".bright_white(),
                         rename_count.to_string().bright_cyan().bold()
                     );
                 }
             }
-            
+
             for group in &duplicate_groups {
                 if group.len() > 1 {
                     println!("\n{}", "🔍 DUPLICATE GROUP:".yellow().bold());
                     for (idx, path) in group.iter().enumerate() {
                         if idx == 0 {
-                            println!("  {} {}", 
+                            println!(
+                                "  {} {}",
                                 "KEEP:".bright_blue().bold(),
                                 path.display().to_string().bright_white()
                             );
                         } else {
-                            println!("  {} {}", 
+                            println!(
+                                "  {} {}",
                                 "DELETE:".red().bold(),
                                 path.display().to_string().bright_black()
                             );
@@ -175,26 +267,27 @@ fn main() -> Result<()> {
             }
 
             if !files_to_delete.is_empty() {
-                println!("\n{}", "🗑️  SMALL/CORRUPTED/FAILED FILES TO DELETE:".red().bold());
+                println!(
+                    "\n{}",
+                    "🗑️  SMALL/CORRUPTED/FAILED FILES TO DELETE:".red().bold()
+                );
                 for path in &files_to_delete {
-                    println!("  {} {}", 
+                    println!(
+                        "  {} {}",
                         "DELETE:".red().bold(),
                         path.display().to_string().bright_black()
                     );
                 }
             }
-            
+
             if !todo_list.items.is_empty() {
                 println!("\n{}", "📋 TODO LIST:".yellow().bold());
                 for item in &todo_list.items {
-                    println!("  {} {}", 
-                        "- [ ]".bright_yellow(),
-                        item.bright_white()
-                    );
+                    println!("  {} {}", "- [ ]".bright_yellow(), item.bright_white());
                 }
             }
         }
-        
+
         // Write todo.md even in dry-run mode (as requested)
         todo_list.write()?;
         if !args.json {
@@ -225,7 +318,8 @@ fn main() -> Result<()> {
 
         // Delete small/corrupted/failed files if requested
         if (args.delete_small || args.clean_failed) && !files_to_delete.is_empty() {
-            println!("\n{} {} small/corrupted/failed files...",
+            println!(
+                "\n{} {} small/corrupted/failed files...",
                 "🗑️".bright_white(),
                 files_to_delete.len().to_string().red().bold()
             );
@@ -233,7 +327,8 @@ fn main() -> Result<()> {
                 if !args.dry_run {
                     std::fs::remove_file(path)?;
                     info!("Deleted small/corrupted/failed file: {}", path.display());
-                    println!("  {} {}",
+                    println!(
+                        "  {} {}",
                         "Deleted:".red().bold(),
                         path.display().to_string().bright_black()
                     );
@@ -247,7 +342,8 @@ fn main() -> Result<()> {
     }
 
     if !args.json {
-        println!("\n{} {}", 
+        println!(
+            "\n{} {}",
             "✓".green().bold(),
             "Operation completed successfully!".bright_green().bold()
         );

@@ -74,10 +74,7 @@ impl TodoList {
                 )
             }
             FileIssue::ReadError => {
-                format!(
-                    "检查文件权限: {} (无法读取文件)",
-                    file_info.original_name
-                )
+                format!("检查文件权限: {} (无法读取文件)", file_info.original_name)
             }
         };
 
@@ -87,7 +84,9 @@ impl TodoList {
                 FileIssue::FailedDownload => self.failed_downloads.push(item_clone.clone()),
                 FileIssue::TooSmall => self.small_files.push(item_clone.clone()),
                 FileIssue::CorruptedPdf => self.corrupted_files.push(item_clone.clone()),
-                FileIssue::InvalidExtension | FileIssue::ReadError => self.other_issues.push(item_clone.clone()),
+                FileIssue::InvalidExtension | FileIssue::ReadError => {
+                    self.other_issues.push(item_clone.clone())
+                }
             }
             self.items.push(item_clone);
             debug!("Added to todo: {}", item);
@@ -132,11 +131,16 @@ impl TodoList {
     pub fn remove_file_from_todo(&mut self, filename: &str) {
         // Remove items that contain this filename from all lists
         let filename_lower = filename.to_lowercase();
-        self.items.retain(|item| !item.to_lowercase().contains(&filename_lower));
-        self.failed_downloads.retain(|item| !item.to_lowercase().contains(&filename_lower));
-        self.small_files.retain(|item| !item.to_lowercase().contains(&filename_lower));
-        self.corrupted_files.retain(|item| !item.to_lowercase().contains(&filename_lower));
-        self.other_issues.retain(|item| !item.to_lowercase().contains(&filename_lower));
+        self.items
+            .retain(|item| !item.to_lowercase().contains(&filename_lower));
+        self.failed_downloads
+            .retain(|item| !item.to_lowercase().contains(&filename_lower));
+        self.small_files
+            .retain(|item| !item.to_lowercase().contains(&filename_lower));
+        self.corrupted_files
+            .retain(|item| !item.to_lowercase().contains(&filename_lower));
+        self.other_issues
+            .retain(|item| !item.to_lowercase().contains(&filename_lower));
         debug!("Removed {} from todo list", filename);
     }
 
@@ -147,10 +151,10 @@ impl TodoList {
             &self.corrupted_files,
             &self.other_issues,
             self.items.iter().filter(|item| {
-                !self.failed_downloads.contains(item) 
-                && !self.small_files.contains(item)
-                && !self.corrupted_files.contains(item)
-                && !self.other_issues.contains(item)
+                !self.failed_downloads.contains(item)
+                    && !self.small_files.contains(item)
+                    && !self.corrupted_files.contains(item)
+                    && !self.other_issues.contains(item)
             }),
         );
 
@@ -169,7 +173,7 @@ fn extract_items_from_md(content: &str) -> Vec<String> {
         "处理其他文件问题",
         "MD5校验重复文件",
     ];
-    
+
     content
         .lines()
         .filter(|line| line.trim().starts_with("- ["))
@@ -186,16 +190,16 @@ fn extract_items_from_md(content: &str) -> Vec<String> {
 
 fn validate_pdf_header(path: &PathBuf) -> Result<()> {
     use std::io::Read;
-    
+
     let mut file = fs::File::open(path)?;
     let mut header = [0u8; 5];
     file.read_exact(&mut header)?;
-    
+
     // PDF files should start with "%PDF-"
     if &header != b"%PDF-" {
         return Err(anyhow::anyhow!("Invalid PDF header"));
     }
-    
+
     Ok(())
 }
 
@@ -209,7 +213,10 @@ fn generate_todo_md<'a>(
     let mut md = String::new();
 
     md.push_str("# 需要检查的任务\n\n");
-    md.push_str(&format!("更新时间: {}\n\n", Local::now().format("%Y-%m-%d %H:%M:%S")));
+    md.push_str(&format!(
+        "更新时间: {}\n\n",
+        Local::now().format("%Y-%m-%d %H:%M:%S")
+    ));
 
     if !failed_downloads.is_empty() {
         md.push_str("## 🔄 未完成下载文件（.download）\n\n");
@@ -245,7 +252,7 @@ fn generate_todo_md<'a>(
 
     let other_vec: Vec<&String> = other_items.collect();
     let has_other_items = !other_vec.is_empty();
-    
+
     if has_other_items {
         md.push_str("## 📋 其他需要处理的文件\n\n");
         for item in &other_vec {
@@ -254,7 +261,12 @@ fn generate_todo_md<'a>(
         md.push('\n');
     }
 
-    if failed_downloads.is_empty() && small_files.is_empty() && corrupted_files.is_empty() && other_issues.is_empty() && !has_other_items {
+    if failed_downloads.is_empty()
+        && small_files.is_empty()
+        && corrupted_files.is_empty()
+        && other_issues.is_empty()
+        && !has_other_items
+    {
         md.push_str("✅ 所有文件已检查完毕，无需处理的问题。\n\n");
     }
 
@@ -324,6 +336,7 @@ Other text
             is_too_small: false,
             new_name: None,
             new_path: tmp_dir.path().join("fail.download"),
+            cloud_metadata: crate::scanner::CloudMetadata::default(),
         };
 
         todo_list.add_failed_download(&file_info)?;
@@ -371,6 +384,7 @@ Other text
             is_too_small: false,
             new_name: None,
             new_path: pdf_path,
+            cloud_metadata: crate::scanner::CloudMetadata::default(),
         };
 
         todo_list.analyze_file_integrity(&file_info)?;
@@ -400,6 +414,7 @@ Other text
             is_too_small: false,
             new_name: None,
             new_path: pdf_path,
+            cloud_metadata: crate::scanner::CloudMetadata::default(),
         };
 
         todo_list.analyze_file_integrity(&file_info)?;

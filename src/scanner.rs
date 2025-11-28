@@ -1,8 +1,22 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use log::debug;
 use std::fs;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
+
+#[derive(Debug, Clone)]
+pub enum CloudProvider {
+    Dropbox,
+    GoogleDrive,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct CloudMetadata {
+    pub provider: Option<CloudProvider>,
+    pub dropbox_content_hash: Option<String>,
+    pub gdrive_md5_checksum: Option<String>,
+    pub is_virtual: bool,
+}
 
 #[derive(Debug, Clone)]
 pub struct FileInfo {
@@ -15,11 +29,13 @@ pub struct FileInfo {
     pub is_too_small: bool,
     pub new_name: Option<String>,
     pub new_path: PathBuf,
+    pub cloud_metadata: CloudMetadata,
 }
 
 pub struct Scanner {
     root_path: PathBuf,
     max_depth: usize,
+    is_virtual_mount: bool,
 }
 
 impl Scanner {
@@ -31,6 +47,7 @@ impl Scanner {
         Ok(Scanner {
             root_path,
             max_depth,
+            is_virtual_mount: detect_virtual_mount(path),
         })
     }
 
@@ -84,7 +101,8 @@ impl Scanner {
                 .unwrap_or_default()
         };
 
-        let is_failed_download = original_name.ends_with(".download") || original_name.ends_with(".crdownload");
+        let is_failed_download =
+            original_name.ends_with(".download") || original_name.ends_with(".crdownload");
         // Only check size for PDF and EPUB files (txt files can be small)
         let is_ebook = extension == ".pdf" || extension == ".epub";
         let is_too_small = !is_failed_download && is_ebook && size < 1024; // Less than 1KB
@@ -99,6 +117,10 @@ impl Scanner {
             is_too_small,
             new_name: None,
             new_path: path.to_path_buf(),
+            cloud_metadata: CloudMetadata {
+                is_virtual: self.is_virtual_mount,
+                ..Default::default()
+            },
         })
     }
 
@@ -110,7 +132,9 @@ impl Scanner {
             }
 
             // Skip download folders only (not files) - they're handled by download_recovery module
-            if path.is_dir() && (filename.ends_with(".download") || filename.ends_with(".crdownload")) {
+            if path.is_dir()
+                && (filename.ends_with(".download") || filename.ends_with(".crdownload"))
+            {
                 return true;
             }
 
@@ -123,6 +147,50 @@ impl Scanner {
 
         false
     }
+}
+
+/// Lightweight check to see if the target path is likely on a virtual/remote mount.
+///
+/// Best-effort heuristic: inspect /proc/mounts for fuse/davfs/gvfs filesystems on Linux.
+/// Falls back to a string check for common cloud folders on other platforms.
+pub fn detect_virtual_mount(path: &Path) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(canon) = path.canonicalize() {
+            if let Ok(mounts) = fs::read_to_string("/proc/mounts") {
+                for line in mounts.lines() {
+                    let parts: Vec<_> = line.split_whitespace().collect();
+                    if parts.len() >= 3 {
+                        let mount_point = PathBuf::from(parts[1]);
+                        let fstype = parts[2];
+
+                        if canon.starts_with(&mount_point)
+                            && (fstype.contains("fuse")
+                                || fstype.contains("dav")
+                                || fstype.contains("gvfs"))
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        if let Some(path_str) = path.to_str() {
+            let lowered = path_str.to_lowercase();
+            if lowered.contains("dropbox")
+                || lowered.contains("google drive")
+                || lowered.contains("onedrive")
+            {
+                return true;
+            }
+        }
+    }
+
+    false
 }
 
 #[cfg(test)]
@@ -185,4 +253,3 @@ mod tests {
         assert!(file_info.is_too_small);
     }
 }
-

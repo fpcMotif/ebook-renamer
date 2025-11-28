@@ -117,6 +117,21 @@ pub struct Args {
     )]
     pub skip_cloud_hash: bool,
 
+    /// Enable fuzzy matching for duplicate detection (name similarity > 85%)
+    #[arg(
+        long,
+        help = "Enable fuzzy matching for duplicate detection when using cloud mode (name similarity > 85%)"
+    )]
+    pub fuzzy: bool,
+
+    /// Size threshold (in bytes) below which MD5 hash will be computed even in cloud mode
+    #[arg(
+        long,
+        value_name = "BYTES",
+        help = "Size threshold (in bytes) below which MD5 hash will be computed even in cloud mode (e.g. for small files)"
+    )]
+    pub cloud_threshold: Option<u64>,
+
     /// Automatically clean up .download/.crdownload folders after extracting PDFs
     #[arg(
         long,
@@ -164,6 +179,8 @@ mod tests {
             clean_failed: false,
             json: false,
             skip_cloud_hash: false,
+            fuzzy: false,
+            cloud_threshold: None,
             cleanup_downloads: false,
         };
 
@@ -192,6 +209,8 @@ mod tests {
             clean_failed: false,
             json: false,
             skip_cloud_hash: false,
+            fuzzy: false,
+            cloud_threshold: None,
             cleanup_downloads: false,
         };
 
@@ -219,6 +238,8 @@ mod tests {
             clean_failed: false,
             json: false,
             skip_cloud_hash: false,
+            fuzzy: false,
+            cloud_threshold: None,
             cleanup_downloads: false,
         };
 

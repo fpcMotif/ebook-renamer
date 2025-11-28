@@ -174,7 +174,12 @@ fn run_process(args: Args, tx: mpsc::Sender<AppEvent>) -> Result<()> {
     tx.send(AppEvent::CheckComplete)?;
 
     // 5. Duplicates
-    let (duplicate_groups, clean_files) = duplicates::detect_duplicates(normalized, args.skip_cloud_hash)?;
+    let (duplicate_groups, clean_files) = duplicates::detect_duplicates(
+        normalized,
+        args.skip_cloud_hash,
+        args.fuzzy,
+        args.cloud_threshold
+    )?;
     tx.send(AppEvent::DuplicatesComplete(duplicate_groups.clone()))?;
 
     // 6. Execute

@@ -111,12 +111,19 @@ fn main() -> Result<()> {
     }
 
     // Detect duplicates (skip if cloud storage mode)
-    let (duplicate_groups, clean_files) = duplicates::detect_duplicates(normalized, args.skip_cloud_hash)?;
+    let (duplicate_groups, clean_files) = duplicates::detect_duplicates(
+        normalized,
+        args.skip_cloud_hash,
+        args.fuzzy,
+        args.cloud_threshold
+    )?;
+
     if args.skip_cloud_hash {
-        info!("Skipped duplicate detection (cloud storage mode)");
+        info!("Duplicate detection: Cloud/Name-based mode (Fuzzy: {}, Threshold: {:?})", args.fuzzy, args.cloud_threshold);
     } else {
-        info!("Detected {} duplicate groups", duplicate_groups.len());
+        info!("Duplicate detection: Standard MD5 hash mode");
     }
+    info!("Detected {} duplicate groups", duplicate_groups.len());
 
     // Show or execute renames
     if args.dry_run {

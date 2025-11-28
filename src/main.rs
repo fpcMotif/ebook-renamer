@@ -6,6 +6,7 @@ mod cli;
 mod json_output;
 mod download_recovery;
 mod tui;
+mod cloud_storage;
 
 use anyhow::Result;
 use clap::Parser;
@@ -14,13 +15,19 @@ use log::info;
 use download_recovery::DownloadRecovery;
 use colored::*;
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     env_logger::Builder::from_default_env()
         .format_timestamp_millis()
         .init();
 
     let args = Args::parse();
     info!("Starting ebook renamer with args: {:?}", args);
+
+    // Check if cloud storage mode is enabled
+    if args.cloud_provider.is_some() {
+        return process_cloud_storage(args).await;
+    }
 
     // Handle --fetch-arxiv placeholder
     if args.fetch_arxiv {
@@ -247,10 +254,183 @@ fn main() -> Result<()> {
     }
 
     if !args.json {
-        println!("\n{} {}", 
+        println!("\n{} {}",
             "✓".green().bold(),
             "Operation completed successfully!".bright_green().bold()
         );
     }
+    Ok(())
+}
+
+/// Process files in cloud storage (Dropbox or Google Drive)
+async fn process_cloud_storage(args: Args) -> Result<()> {
+    use cloud_storage::{CloudProvider, create_cloud_storage};
+
+    // Validate cloud provider and token
+    let provider_str = args.cloud_provider.as_ref().unwrap();
+    let provider = CloudProvider::from_str(provider_str)
+        .ok_or_else(|| anyhow::anyhow!("Invalid cloud provider: {}. Supported: dropbox, google-drive", provider_str))?;
+
+    let token = args.cloud_token.as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Cloud access token is required. Set --cloud-token or CLOUD_ACCESS_TOKEN env var"))?;
+
+    info!("Initializing {:?} cloud storage backend", provider);
+    println!("{} Connecting to {}...",
+        "🔗".bright_white(),
+        provider_str.bright_cyan()
+    );
+
+    // Create cloud storage backend
+    let storage = create_cloud_storage(provider, token.clone()).await?;
+
+    // List files from cloud storage
+    info!("Listing files from cloud path: {}", args.cloud_path);
+    println!("{} Scanning cloud storage path: {}",
+        "🔍".bright_white(),
+        if args.cloud_path.is_empty() { "/" } else { &args.cloud_path }.bright_white()
+    );
+
+    let cloud_files = storage.list_files(&args.cloud_path, Some(args.max_depth)).await?;
+    println!("{} Found {} files to process",
+        "📁".bright_white(),
+        cloud_files.len().to_string().bright_cyan().bold()
+    );
+
+    // Convert cloud files to FileInfo for processing
+    let files: Vec<scanner::FileInfo> = cloud_files.iter()
+        .map(|cf| cf.to_file_info())
+        .collect();
+
+    // Parse and normalize filenames
+    let normalized = normalizer::normalize_files(files)?;
+    info!("Normalized {} files", normalized.len());
+
+    // Handle failed downloads and small files (similar to local processing)
+    let mut todo_list = todo::TodoList::new(&args.todo_file, &args.path)?;
+    let mut files_to_delete = Vec::new();
+    let mut todo_items = Vec::new();
+
+    for (idx, file_info) in normalized.iter().enumerate() {
+        if file_info.is_failed_download || file_info.is_too_small {
+            if args.delete_small {
+                files_to_delete.push(cloud_files[idx].path.clone());
+            } else {
+                todo_list.add_failed_download(file_info)?;
+                let category = if file_info.is_failed_download { "failed_download" } else { "too_small" };
+                let message = if file_info.is_failed_download {
+                    format!("Redownload: {} (Unfinished download)", file_info.original_name)
+                } else {
+                    format!("Check and redownload: {} (File too small, only {} bytes)", file_info.original_name, file_info.size)
+                };
+                todo_items.push((category.to_string(), file_info.original_name.clone(), message));
+            }
+        }
+    }
+
+    // Note: Duplicate detection via MD5 is skipped in cloud mode to avoid downloads
+    // Cloud storage typically handles deduplication internally
+    info!("Skipped duplicate detection (cloud storage mode)");
+
+    // Show or execute renames
+    if args.dry_run {
+        if args.json {
+            let operations = json_output::OperationsOutput::from_results(
+                normalized.clone(),
+                Vec::new(), // No duplicate groups in cloud mode
+                Vec::new(), // No file deletions by path in dry-run
+                todo_items,
+                &args.path,
+            )?;
+            println!("{}", operations.to_json()?);
+        } else {
+            println!("\n{}", "═══ DRY RUN MODE (Cloud Storage) ═══".bold().bright_blue());
+
+            let mut rename_count = 0;
+            for file_info in &normalized {
+                if let Some(ref new_name) = file_info.new_name {
+                    if new_name != &file_info.original_name {
+                        println!("{} {} {} {}",
+                            "RENAME:".green().bold(),
+                            file_info.original_name.bright_white(),
+                            "→".bright_blue().bold(),
+                            new_name.bright_cyan()
+                        );
+                        rename_count += 1;
+                    }
+                }
+            }
+
+            if rename_count > 0 {
+                println!("\n{} {} files to rename",
+                    "📝".bright_white(),
+                    rename_count.to_string().bright_cyan().bold()
+                );
+            }
+
+            if !files_to_delete.is_empty() {
+                println!("\n{}", "🗑️  FILES TO DELETE:".red().bold());
+                for path in &files_to_delete {
+                    println!("  {} {}",
+                        "DELETE:".red().bold(),
+                        path.bright_black()
+                    );
+                }
+            }
+        }
+
+        todo_list.write()?;
+        if !args.json {
+            println!("\n{} todo.md written (dry-run mode)", "✓".green().bold());
+        }
+    } else {
+        // Execute renames in cloud storage
+        println!("\n{} Applying renames to cloud storage...", "⚙️".bright_white());
+
+        for (idx, file_info) in normalized.iter().enumerate() {
+            if let Some(ref new_name) = file_info.new_name {
+                if new_name != &file_info.original_name {
+                    let from_path = &cloud_files[idx].path;
+                    // Construct new path by replacing filename
+                    let new_path = from_path.rsplit_once('/')
+                        .map(|(dir, _)| format!("{}/{}", dir, new_name))
+                        .unwrap_or_else(|| new_name.clone());
+
+                    storage.rename_file(from_path, &new_path).await?;
+                    println!("  {} {} → {}",
+                        "✓".green(),
+                        file_info.original_name,
+                        new_name.bright_cyan()
+                    );
+                    info!("Renamed: {} -> {}", from_path, new_path);
+                }
+            }
+        }
+
+        // Delete small/failed files if requested
+        if args.delete_small && !files_to_delete.is_empty() {
+            println!("\n{} Deleting {} small/failed files...",
+                "🗑️".bright_white(),
+                files_to_delete.len().to_string().red().bold()
+            );
+
+            for path in &files_to_delete {
+                storage.delete_file(path).await?;
+                println!("  {} {}", "Deleted:".red().bold(), path.bright_black());
+                info!("Deleted: {}", path);
+            }
+        }
+
+        // Write todo.md
+        todo_list.write()?;
+        info!("Wrote todo.md");
+    }
+
+    if !args.json {
+        println!("\n{} {}",
+            "✓".green().bold(),
+            "Cloud storage operation completed successfully!".bright_green().bold()
+        );
+    }
+
     Ok(())
 }

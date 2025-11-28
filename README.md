@@ -19,6 +19,7 @@ All three implementations produce identical JSON output and follow the same dete
 - 📋 **Todo List Generation**: Automatic generation of `todo.md` for manual review
 - ⚡ **JSON Output**: Machine-readable output for automation and testing
 - 🌐 **Multi-Platform**: Works on Windows, macOS, and Linux
+- ☁️ **Cloud Storage**: Direct integration with Dropbox and Google Drive for remote file management
 
 ## Documentation
 
@@ -60,6 +61,55 @@ python3 source_py/ebook-renamer.py --dry-run --json /path/to/books
 ruby source_rb/ebook-renamer.rb --dry-run --json /path/to/books
 ```
 
+## Cloud Storage Integration
+
+The tool now supports direct integration with Dropbox and Google Drive, allowing you to organize your ebook library directly in cloud storage without downloading files locally.
+
+### Supported Cloud Providers
+
+- **Dropbox**: Rename and organize files in your Dropbox account
+- **Google Drive**: Rename and organize files in your Google Drive account
+
+### Getting Cloud Access Tokens
+
+#### Dropbox
+1. Go to [Dropbox App Console](https://www.dropbox.com/developers/apps)
+2. Create a new app or use an existing one
+3. Generate an access token
+4. Use the token with `--cloud-token` or set `CLOUD_ACCESS_TOKEN` environment variable
+
+#### Google Drive
+1. Go to [Google Cloud Console](https://console.cloud.google.com/)
+2. Create a new project or use an existing one
+3. Enable Google Drive API
+4. Create OAuth 2.0 credentials
+5. Obtain an access token
+6. Use the token with `--cloud-token` or set `CLOUD_ACCESS_TOKEN` environment variable
+
+### Cloud Usage Examples
+
+```bash
+# Dropbox: Dry run to see what would be renamed
+cargo run -- --cloud-provider dropbox --cloud-token YOUR_TOKEN --cloud-path /Books --dry-run
+
+# Dropbox: Actually rename files
+cargo run -- --cloud-provider dropbox --cloud-token YOUR_TOKEN --cloud-path /Books
+
+# Google Drive: Organize ebooks in a specific folder
+cargo run -- --cloud-provider google-drive --cloud-token YOUR_TOKEN --cloud-path /MyEbooks --dry-run
+
+# Using environment variable for token
+export CLOUD_ACCESS_TOKEN=your_token_here
+cargo run -- --cloud-provider dropbox --cloud-path /Books
+```
+
+### Important Notes for Cloud Storage
+
+- **No MD5 Hashing**: Duplicate detection is skipped in cloud mode to avoid downloading files
+- **File Formats**: Supports PDF, EPUB, DJVU, TXT, and MOBI files
+- **Dry Run Recommended**: Always use `--dry-run` first to preview changes
+- **Rate Limits**: Cloud APIs have rate limits; the tool respects them but may be slower for large libraries
+
 ## CLI Reference
 
 All implementations share the same CLI interface:
@@ -75,12 +125,16 @@ Options:
   --json                Output in JSON format
   --max-depth N         Maximum directory depth (default: unlimited)
   --no-recursive        Only scan top-level directory
-  --extensions EXT      Comma-separated extensions (default: pdf,epub,txt)
+  --extensions EXT      Comma-separated extensions (default: pdf,epub,txt,djvu)
   --no-delete           Don't delete duplicates, only list them
   --todo-file PATH      Custom todo.md location
   --delete-small        Delete files < 1KB instead of adding to todo
   --preserve-unicode    Preserve non-Latin scripts
   --verbose             Enable verbose logging
+  --skip-cloud-hash     Skip MD5 hash computation (for cloud storage)
+  --cloud-provider P    Cloud provider: dropbox or google-drive
+  --cloud-token TOKEN   Access token for cloud storage API
+  --cloud-path PATH     Cloud storage path to process (default: /)
 ```
 
 ## JSON Output Schema
@@ -161,9 +215,9 @@ All implementations follow the same modular architecture:
 ## File Processing Rules
 
 ### Supported Extensions
-- **Duplicates**: `.pdf`, `.epub`, `.txt`
+- **Duplicates**: `.pdf`, `.epub`, `.txt`, `.djvu`
 - **Failed Downloads**: `.download`, `.crdownload`
-- **All Formats**: `.pdf`, `.epub`, `.txt`, `.mobi`, `.download`, `.crdownload`
+- **All Formats**: `.pdf`, `.epub`, `.txt`, `.mobi`, `.djvu`, `.download`, `.crdownload`
 
 ### Normalization Rules
 1. Remove series prefixes (e.g., "Graduate Texts in Mathematics")

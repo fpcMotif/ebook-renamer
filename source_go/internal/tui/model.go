@@ -277,7 +277,7 @@ type duplicatesMsg struct {
 }
 
 func (m Model) detectDuplicatesCmd() tea.Msg {
-	groups, clean, err := duplicates.DetectDuplicates(m.normalized)
+	groups, clean, err := duplicates.DetectDuplicates(m.normalized, m.config.SkipCloudHash)
 	if err != nil {
 		return errMsg(err)
 	}

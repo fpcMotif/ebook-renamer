@@ -90,13 +90,33 @@ class Normalizer:
             "[Progress in Mathematics №",
             "[AMS Mathematical Surveys and Monographs",
         ]
-        
+
         result = s
         for prefix in prefixes:
             if result.startswith(prefix):
                 result = result[len(prefix):]
                 result = result.lstrip("- ]")
                 break
+
+        # Generic pattern: (Series Name) Author - Title
+        # If it starts with (...), check if the next part looks like an author
+        re_generic = re.compile(r'^\s*\(([^)]+)\)\s+(.+)$')
+        match = re_generic.match(result)
+        if match:
+            # series_part = match.group(1)
+            rest_part = match.group(2)
+
+            # Check if 'rest_part' starts with an author
+            # We look for the first separator (- or :) to isolate the potential author
+            re_sep = re.compile(r'(?:--|[-:])')
+            sep_match = re_sep.search(rest_part)
+            potential_author = rest_part
+            if sep_match:
+                potential_author = rest_part[:sep_match.start()]
+
+            if self._is_likely_author(potential_author):
+                result = rest_part
+
         return result.strip()
 
     def _clean_noise_sources(self, s: str) -> str:
@@ -233,6 +253,23 @@ class Normalizer:
         s = self._clean_noise_sources(s)
         s = self.AUTH_REGEX.sub("", s)
         s = self.TRAILING_ID_REGEX.sub("", s)
+
+        # Remove trailing publisher info separated by dash
+        # e.g. "Title - Publisher"
+        idx = s.rfind(" - ")
+        if idx != -1:
+            suffix = s[idx+3:]
+            if self._is_publisher_or_series_info(suffix):
+                s = s[:idx]
+
+        # Also handle just "-" without spaces if it looks like publisher
+        idx = s.rfind("-")
+        if idx != -1 and idx > 0 and idx < len(s) - 1:
+            suffix = s[idx+1:].strip()
+            # Use stricter check for non-spaced dash to avoid stripping parts of title
+            if self._is_strict_publisher_info(suffix):
+                s = s[:idx]
+
         s = self._clean_orphaned_brackets(s)
         s = self.SPACE_REGEX.sub(" ", s)
         s = s.strip("-:;,.")
@@ -245,18 +282,53 @@ class Normalizer:
             "Pure and Applied", "Mathematics", "Foundations of", "Monographs", "Studies", "Collection",
             "Textbook", "Edition", "Vol.", "Volume", "No.", "Part", "理工", "出版社", "の",
         ]
-        
+
         for k in publisher_keywords:
             if k in s:
                 return True
-                
+
         # Check for series info (mostly non-letters with numbers)
         has_numbers = any(c.isdigit() for c in s)
         non_letter_count = sum(1 for c in s if not c.isalpha() and c != ' ')
-        
+
         if has_numbers and non_letter_count > 2:
             return True
-            
+
+        return False
+
+    def _is_strict_publisher_info(self, s: str) -> bool:
+        """Stricter version for suffix stripping (no parens)."""
+        strict_keywords = [
+            "Press",
+            "Publishing",
+            "Springer",
+            "Cambridge",
+            "Oxford",
+            "MIT",
+            "Wiley",
+            "Elsevier",
+            "Routledge",
+            "Pearson",
+            "McGraw",
+            "Addison",
+            "Prentice",
+            "O'Reilly",
+            "Princeton",
+            "Harvard",
+            "Yale",
+            "Stanford",
+            "Chicago",
+            "California",
+            "Columbia",
+            "University",
+            "Verlag",
+            "Birkhäuser",
+            "CUP",
+        ]
+
+        for keyword in strict_keywords:
+            if keyword in s:
+                return True
         return False
 
     def _clean_orphaned_brackets(self, s: str) -> str:

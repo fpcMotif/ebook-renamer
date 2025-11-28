@@ -84,6 +84,7 @@ type Config struct {
 	DeleteSmall     bool
 	AutoCleanup     bool
 	Json            bool
+	SkipCloudHash   bool
 }
 
 // CleanupResult holds the result of cleanup operations

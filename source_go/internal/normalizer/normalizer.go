@@ -122,6 +122,27 @@ func removeSeriesPrefixes(s string) string {
 			break
 		}
 	}
+
+	// Generic pattern: (Series Name) Author - Title
+	// If it starts with (...), check if the next part looks like an author
+	reGeneric := regexp.MustCompile(`^\s*\(([^)]+)\)\s+(.+)$`)
+	if matches := reGeneric.FindStringSubmatch(result); matches != nil {
+		// seriesPart := matches[1]
+		restPart := matches[2]
+
+		// Check if 'restPart' starts with an author
+		// We look for the first separator (- or :) to isolate the potential author
+		reSep := regexp.MustCompile(`(?:--|[-:])`)
+		potentialAuthor := restPart
+		if mat := reSep.FindStringIndex(restPart); mat != nil {
+			potentialAuthor = restPart[:mat[0]]
+		}
+
+		if isLikelyAuthor(potentialAuthor) {
+			result = restPart
+		}
+	}
+
 	return strings.TrimSpace(result)
 }
 
@@ -371,6 +392,25 @@ func cleanTitle(s string) string {
 	// Strip trailing ID-like noise
 	s = trailingIDRegex.ReplaceAllString(s, "")
 
+	// Remove trailing publisher info separated by dash
+	// e.g. "Title - Publisher"
+	if idx := strings.LastIndex(s, " - "); idx != -1 {
+		suffix := s[idx+3:]
+		if isPublisherOrSeriesInfo(suffix) {
+			s = s[:idx]
+		}
+	}
+	// Also handle just "-" without spaces if it looks like publisher
+	if idx := strings.LastIndex(s, "-"); idx != -1 {
+		if idx > 0 && idx < len(s)-1 {
+			suffix := strings.TrimSpace(s[idx+1:])
+			// Use stricter check for non-spaced dash to avoid stripping parts of title
+			if isStrictPublisherInfo(suffix) {
+				s = s[:idx]
+			}
+		}
+	}
+
 	// Clean orphaned brackets
 	s = cleanOrphanedBrackets(s)
 
@@ -419,6 +459,44 @@ func isPublisherOrSeriesInfo(s string) bool {
 		return true
 	}
 
+	return false
+}
+
+func isStrictPublisherInfo(s string) bool {
+	// Stricter version for suffix stripping (no parens)
+	strictKeywords := []string{
+		"Press",
+		"Publishing",
+		"Springer",
+		"Cambridge",
+		"Oxford",
+		"MIT",
+		"Wiley",
+		"Elsevier",
+		"Routledge",
+		"Pearson",
+		"McGraw",
+		"Addison",
+		"Prentice",
+		"O'Reilly",
+		"Princeton",
+		"Harvard",
+		"Yale",
+		"Stanford",
+		"Chicago",
+		"California",
+		"Columbia",
+		"University",
+		"Verlag",
+		"Birkhäuser",
+		"CUP",
+	}
+
+	for _, keyword := range strictKeywords {
+		if strings.Contains(s, keyword) {
+			return true
+		}
+	}
 	return false
 }
 

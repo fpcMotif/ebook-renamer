@@ -394,19 +394,23 @@ func cleanTitle(s string) string {
 
 	// Remove trailing publisher info separated by dash
 	// e.g. "Title - Publisher"
+	removedDashSuffix := false
 	if idx := strings.LastIndex(s, " - "); idx != -1 {
 		suffix := s[idx+3:]
 		if isPublisherOrSeriesInfo(suffix) {
 			s = s[:idx]
+			removedDashSuffix = true
 		}
 	}
 	// Also handle just "-" without spaces if it looks like publisher
-	if idx := strings.LastIndex(s, "-"); idx != -1 {
-		if idx > 0 && idx < len(s)-1 {
-			suffix := strings.TrimSpace(s[idx+1:])
-			// Use stricter check for non-spaced dash to avoid stripping parts of title
-			if isStrictPublisherInfo(suffix) {
-				s = s[:idx]
+	if !removedDashSuffix {
+		if idx := strings.LastIndex(s, "-"); idx != -1 {
+			if idx > 0 && idx < len(s)-1 {
+				suffix := strings.TrimSpace(s[idx+1:])
+				// Use stricter check for non-spaced dash to avoid stripping parts of title
+				if isStrictPublisherInfo(suffix) {
+					s = s[:idx]
+				}
 			}
 		}
 	}
@@ -515,8 +519,8 @@ func cleanOrphanedBrackets(s string) string {
 				openParens--
 				result.WriteRune(r)
 			} else {
-                // If no open paren, we skip this closing paren
-            }
+				// If no open paren, we skip this closing paren
+			}
 		case '[':
 			openBrackets++
 			result.WriteRune(r)

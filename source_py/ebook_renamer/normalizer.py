@@ -256,19 +256,22 @@ class Normalizer:
 
         # Remove trailing publisher info separated by dash
         # e.g. "Title - Publisher"
+        removed_dash_suffix = False
         idx = s.rfind(" - ")
         if idx != -1:
             suffix = s[idx+3:]
             if self._is_publisher_or_series_info(suffix):
                 s = s[:idx]
+                removed_dash_suffix = True
 
         # Also handle just "-" without spaces if it looks like publisher
-        idx = s.rfind("-")
-        if idx != -1 and idx > 0 and idx < len(s) - 1:
-            suffix = s[idx+1:].strip()
-            # Use stricter check for non-spaced dash to avoid stripping parts of title
-            if self._is_strict_publisher_info(suffix):
-                s = s[:idx]
+        if not removed_dash_suffix:
+            idx = s.rfind("-")
+            if idx != -1 and idx > 0 and idx < len(s) - 1:
+                suffix = s[idx+1:].strip()
+                # Use stricter check for non-spaced dash to avoid stripping parts of title
+                if self._is_strict_publisher_info(suffix):
+                    s = s[:idx]
 
         s = self._clean_orphaned_brackets(s)
         s = self.SPACE_REGEX.sub(" ", s)

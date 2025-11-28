@@ -6,6 +6,7 @@ mod cli;
 mod json_output;
 mod download_recovery;
 mod tui;
+mod cloud;
 
 use anyhow::Result;
 use clap::Parser;
@@ -19,12 +20,29 @@ fn main() -> Result<()> {
         .format_timestamp_millis()
         .init();
 
-    let args = Args::parse();
+    let mut args = Args::parse();
     info!("Starting ebook renamer with args: {:?}", args);
+
+    // Auto-detect cloud storage and enable skip_cloud_hash if not explicitly set
+    if !args.skip_cloud_hash {
+        if let Some(provider) = cloud::is_cloud_storage_path(&args.path) {
+            if !args.json {
+                println!("{}", cloud::cloud_mode_warning(provider).yellow());
+            }
+            args.skip_cloud_hash = true;
+            info!("Auto-enabled cloud mode for {} storage", provider.name());
+        }
+    } else {
+        // User explicitly enabled cloud mode
+        if !args.json {
+            println!("{}", "⚠️  Cloud mode enabled: Using metadata-only duplicate detection.".yellow());
+            println!("{}", "   Duplicate detection based on filename similarity (≥85%) + exact size match.".yellow());
+        }
+    }
 
     // Handle --fetch-arxiv placeholder
     if args.fetch_arxiv {
-        println!("{} {}", 
+        println!("{} {}",
             "⚠️  Warning:".yellow().bold(),
             "--fetch-arxiv is not implemented yet. Files will be processed offline only.".yellow()
         );

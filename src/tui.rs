@@ -148,7 +148,17 @@ pub fn run(args: Args) -> Result<()> {
     Ok(())
 }
 
-fn run_process(args: Args, tx: mpsc::Sender<AppEvent>) -> Result<()> {
+fn run_process(mut args: Args, tx: mpsc::Sender<AppEvent>) -> Result<()> {
+    // Auto-detect cloud storage and enable skip_cloud_hash if not explicitly set
+    if !args.skip_cloud_hash {
+        if let Some(provider) = crate::cloud::is_cloud_storage_path(&args.path) {
+            args.skip_cloud_hash = true;
+            // Send log message about cloud mode
+            let msg = format!("⚠️  Detected {} - using metadata-only mode", provider.name());
+            tx.send(AppEvent::Error(msg))?;
+        }
+    }
+
     // 1. Recovery
     let recovery = download_recovery::DownloadRecovery::new(&args.path, args.cleanup_downloads);
     let _ = recovery.recover_downloads(); // Ignore errors for now or log them

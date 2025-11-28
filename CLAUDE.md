@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is a multi-language ebook renaming tool with **perfect cross-language behavioral parity** between Rust, Go, Python, Ruby, Haskell, OCaml, and Zig implementations. All implementations produce identical JSON output for the same input files.
 
+**NEW**: Cloud storage integration for Dropbox and Google Drive allows remote file organization without local downloads.
+
 ## Critical Architecture Principle
 
 **Behavioral Parity is Sacred**: All language implementations must produce byte-for-byte identical JSON output when given the same input directory. This is enforced through cross-language testing. When modifying normalization logic, duplicate detection, or any core functionality, you MUST update all implementations simultaneously.
@@ -56,6 +58,18 @@ cd source_py && python3 -m pytest
 - **Haskell**: `cd source_hs && stack build && stack exec ebook-renamer`
 - **Zig**: `cd source_zig && zig build run`
 
+### Cloud Storage (Rust only)
+```bash
+# Dropbox: Dry run
+cargo run -- --cloud-provider dropbox --cloud-token YOUR_TOKEN --cloud-path /Books --dry-run
+
+# Dropbox: Apply renames
+cargo run -- --cloud-provider dropbox --cloud-token YOUR_TOKEN --cloud-path /Books
+
+# Google Drive
+cargo run -- --cloud-provider google-drive --cloud-token YOUR_TOKEN --cloud-path /MyEbooks --dry-run
+```
+
 ## Cross-Language Testing
 
 **CRITICAL**: Run this after ANY changes to core logic:
@@ -85,8 +99,9 @@ All implementations follow this modular structure:
 
 3. **Duplicates Module** (`src/duplicates.rs`, `source_go/internal/duplicates/`, etc.)
    - MD5-based duplicate detection
-   - Only processes `.pdf`, `.epub`, `.txt` (NOT `.mobi`)
+   - Only processes `.pdf`, `.epub`, `.txt`, `.djvu` (NOT `.mobi`)
    - Retention priority: normalized files > shallowest path > newest modified time
+   - Skipped in cloud storage mode to avoid downloading files
 
 4. **Todo Module** (`src/todo.rs`, `source_go/internal/todo/`, etc.)
    - Generates `todo.md` in Chinese
@@ -104,6 +119,13 @@ All implementations follow this modular structure:
    - Go: Bubble Tea with spinners and viewport
    - Python: Rich with progress bars
    - Zig: ANSI escape codes
+
+7. **Cloud Storage Module** (`src/cloud_storage.rs`, Rust only for now)
+   - Trait-based abstraction for cloud storage backends
+   - Dropbox backend: List, rename, delete files via Dropbox API
+   - Google Drive backend: List, rename, delete files via Google Drive API
+   - Skips MD5 hash computation to avoid downloading files
+   - Supports PDF, EPUB, DJVU, TXT, and MOBI files
 
 ## Deterministic Behavior Rules
 
@@ -145,7 +167,7 @@ items.sort_by(|a, b| a.category.cmp(&b.category).then(a.file.cmp(&b.file)));
 - No extension = empty string, not error
 
 ### Small File Handling
-- Threshold: < 1KB for `.pdf` or `.epub`
+- Threshold: < 1KB for `.pdf`, `.epub`, or `.djvu`
 - `--delete-small` flag: deletes immediately instead of adding to todo
 - Failed downloads never count as "small files"
 

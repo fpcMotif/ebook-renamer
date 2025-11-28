@@ -19,5 +19,13 @@ colored = "2.1"
 ratatui = "0.29.0"
 crossterm = "0.29.0"
 
+# Cloud storage dependencies
+tokio = { version = "1.35", features = ["full"] }
+reqwest = { version = "0.12", features = ["json", "multipart", "stream"] }
+futures = "0.3"
+async-trait = "0.1"
+base64 = "0.21"
+urlencoding = "2.1"
+
 [dev-dependencies]
 tempfile = "3.8"

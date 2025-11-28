@@ -6,7 +6,7 @@ use std::fs;
 use std::path::PathBuf;
 
 // Allowed formats to keep
-const ALLOWED_EXTENSIONS: &[&str] = &[".pdf", ".epub", ".txt"];
+const ALLOWED_EXTENSIONS: &[&str] = &[".pdf", ".epub", ".txt", ".djvu"];
 
 pub fn detect_duplicates(files: Vec<FileInfo>, skip_hash: bool) -> Result<(Vec<Vec<PathBuf>>, Vec<FileInfo>)> {
     // Filter to only allowed formats first

@@ -76,6 +76,7 @@ class TestNormalizer(unittest.TestCase):
             ("Title -", "Title"),
             ("Title :", "Title"),
             ("Title ;", "Title"),
+            ("Book - Cambridge - MIT Press", "Book - Cambridge"),
         ]
 
         for input_str, expected in test_cases:

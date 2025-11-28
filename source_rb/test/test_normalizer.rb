@@ -19,7 +19,8 @@ class TestNormalizer < Minitest::Test
       ["Title with  double  spaces", "Title with double spaces"],
       ["Title -", "Title"],
       ["Title :", "Title"],
-      ["Title ;", "Title"]
+      ["Title ;", "Title"],
+      ["Book - Cambridge - MIT Press", "Book - Cambridge"]
     ]
     test_cases.each do |input_str, expected|
       assert_equal expected, @normalizer.clean_title(input_str)

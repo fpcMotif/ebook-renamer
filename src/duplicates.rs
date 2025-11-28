@@ -17,22 +17,64 @@ pub fn detect_duplicates(files: Vec<FileInfo>, skip_hash: bool) -> Result<(Vec<V
     
     debug!("Filtered to {} files with allowed extensions", filtered_files.len());
     
-    // If skip_hash is true, skip duplicate detection entirely
-    if skip_hash {
-        debug!("Skipping MD5 hash computation (cloud storage mode)");
-        return Ok((Vec::new(), filtered_files));
-    }
-    
-    // Build hash map: file_hash -> list of file infos
+    // Build hash map: key -> list of file infos
+    // Key is either MD5 hash or normalized filename depending on skip_hash
     let mut hash_map: HashMap<String, Vec<FileInfo>> = HashMap::new();
 
-    for file_info in &filtered_files {
-        if !file_info.is_failed_download && !file_info.is_too_small {
-            let hash = compute_md5(&file_info.original_path)?;
-            hash_map
-                .entry(hash)
-                .or_insert_with(Vec::new)
-                .push(file_info.clone());
+    if skip_hash {
+        debug!("Skipping MD5 hash computation, using filename-based deduplication");
+        for file_info in &filtered_files {
+            if !file_info.is_failed_download && !file_info.is_too_small {
+                // Use new_name if available, otherwise original_name
+                let key = file_info.new_name.clone()
+                    .unwrap_or_else(|| file_info.original_name.clone());
+                
+                hash_map
+                    .entry(key)
+                    .or_insert_with(Vec::new)
+                    .push(file_info.clone());
+            }
+        }
+    } else {
+        // Optimization: Group by size first
+        // Only compute MD5 for files that have the same size
+        let mut size_map: HashMap<u64, Vec<&FileInfo>> = HashMap::new();
+        
+        for file_info in &filtered_files {
+            if !file_info.is_failed_download && !file_info.is_too_small {
+                size_map
+                    .entry(file_info.size)
+                    .or_insert_with(Vec::new)
+                    .push(file_info);
+            }
+        }
+
+        debug!("Grouped {} files into {} size groups", filtered_files.len(), size_map.len());
+
+        for (size, files) in size_map {
+            // If only one file has this size, it cannot be a duplicate (unless size is 0, but we filter those)
+            if files.len() == 1 {
+                continue;
+            }
+
+            debug!("Size {} has {} potential duplicates, computing hashes...", size, files.len());
+            
+            for file_info in files {
+                match compute_md5(&file_info.original_path) {
+                    Ok(hash) => {
+                        hash_map
+                            .entry(hash)
+                            .or_insert_with(Vec::new)
+                            .push(file_info.clone());
+                    },
+                    Err(e) => {
+                        debug!("Failed to compute hash for {}: {}", file_info.original_path.display(), e);
+                        // Treat as unique if we can't read it? Or just skip? 
+                        // Skipping might be safer to avoid false negatives, or maybe we should warn.
+                        // For now, let's just log and skip adding to duplicate map (so it stays "clean")
+                    }
+                }
+            }
         }
     }
 
@@ -423,5 +465,47 @@ mod tests {
 
         assert_eq!(variants.len(), 1);
         assert_eq!(variants[0].len(), 2);
+    }
+
+    #[test]
+    fn test_detect_duplicates_by_name_when_skip_hash() {
+        let tmp_dir = TempDir::new().unwrap();
+        let now = std::time::SystemTime::now();
+
+        // Two files with different original names but SAME new_name
+        // And different content (simulated by not writing content, since we skip hash)
+        
+        let f1 = FileInfo {
+            original_path: tmp_dir.path().join("file1.pdf"),
+            original_name: "file1.pdf".to_string(),
+            extension: ".pdf".to_string(),
+            size: 100,
+            modified_time: now,
+            is_failed_download: false,
+            is_too_small: false,
+            new_name: Some("Final Name.pdf".to_string()),
+            new_path: tmp_dir.path().join("Final Name.pdf"),
+        };
+
+        let f2 = FileInfo {
+            original_path: tmp_dir.path().join("file2.pdf"),
+            original_name: "file2.pdf".to_string(),
+            extension: ".pdf".to_string(),
+            size: 100,
+            modified_time: now,
+            is_failed_download: false,
+            is_too_small: false,
+            new_name: Some("Final Name.pdf".to_string()),
+            new_path: tmp_dir.path().join("Final Name.pdf"),
+        };
+
+        let files = vec![f1, f2];
+
+        // When skip_hash is true, we expect it to find duplicates based on new_name
+        let (dup_groups, clean_files) = detect_duplicates(files, true).unwrap();
+
+        assert_eq!(dup_groups.len(), 1, "Should find 1 duplicate group");
+        assert_eq!(dup_groups[0].len(), 2, "Group should have 2 files");
+        assert_eq!(clean_files.len(), 1, "Should keep 1 file");
     }
 }

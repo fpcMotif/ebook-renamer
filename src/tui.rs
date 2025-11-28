@@ -185,7 +185,18 @@ fn run_process(args: Args, tx: mpsc::Sender<AppEvent>) -> Result<()> {
                 std::fs::rename(&file_info.original_path, &file_info.new_path)?;
             }
         }
-        // ... delete duplicates ...
+        // Delete duplicates
+        if !args.no_delete {
+            for group in &duplicate_groups {
+                if group.len() > 1 {
+                    for (idx, path) in group.iter().enumerate() {
+                        if idx > 0 {
+                            std::fs::remove_file(path)?;
+                        }
+                    }
+                }
+            }
+        }
     }
     
     // Write todo

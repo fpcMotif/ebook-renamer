@@ -98,6 +98,27 @@ fn remove_series_prefixes(s: &str) -> String {
             break;
         }
     }
+
+    // Generic pattern: (Series Name) Author - Title
+    // If it starts with (...), check if the next part looks like an author
+    let re_generic = Regex::new(r"^\s*\(([^)]+)\)\s+(.+)$").unwrap();
+    if let Some(caps) = re_generic.captures(&result) {
+        let _series_part = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+        let rest_part = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+        
+        // Check if 'rest_part' starts with an author
+        // We look for the first separator (- or :) to isolate the potential author
+        let re_sep = Regex::new(r"(?:--|[-:])").unwrap();
+        let potential_author = if let Some(mat) = re_sep.find(rest_part) {
+            &rest_part[..mat.start()]
+        } else {
+            rest_part
+        };
+
+        if is_likely_author(potential_author) {
+            result = rest_part.to_string();
+        }
+    }
     
     result.trim().to_string()
 }
@@ -428,6 +449,44 @@ fn is_publisher_or_series_info(s: &str) -> bool {
     false
 }
 
+fn is_strict_publisher_info(s: &str) -> bool {
+    // Stricter version for suffix stripping (no parens)
+    let strict_keywords = [
+        "Press",
+        "Publishing",
+        "Springer",
+        "Cambridge",
+        "Oxford",
+        "MIT",
+        "Wiley",
+        "Elsevier",
+        "Routledge",
+        "Pearson",
+        "McGraw",
+        "Addison",
+        "Prentice",
+        "O'Reilly",
+        "Princeton",
+        "Harvard",
+        "Yale",
+        "Stanford",
+        "Chicago",
+        "California",
+        "Columbia",
+        "University",
+        "Verlag",
+        "Birkhäuser",
+        "CUP",
+    ];
+    
+    for keyword in &strict_keywords {
+        if s.contains(keyword) {
+            return true;
+        }
+    }
+    false
+}
+
 fn clean_title(s: &str) -> String {
     let mut s = s.trim().to_string();
 
@@ -440,6 +499,27 @@ fn clean_title(s: &str) -> String {
     // Examples: -B0F5TFL6ZQ, -9780262046305, _12345abc
     let re_trailing_id = Regex::new(r"[-_][A-Za-z0-9]{8,}$").unwrap();
     s = re_trailing_id.replace_all(&s, "").to_string();
+
+    // Remove trailing publisher info separated by dash
+    // e.g. "Title - Publisher"
+    if let Some(idx) = s.rfind(" - ") {
+        let suffix = &s[idx+3..];
+        if is_publisher_or_series_info(suffix) {
+            s = s[..idx].to_string();
+        }
+    }
+    // Also handle just "-" without spaces if it looks like publisher
+    if let Some(idx) = s.rfind('-') {
+        if idx > 0 && idx < s.len() - 1 {
+             let suffix = &s[idx+1..].trim();
+             // Use stricter check for non-spaced dash to avoid stripping parts of title
+             if is_strict_publisher_info(suffix) {
+                 s = s[..idx].to_string();
+             }
+        }
+    }
+
+    // Clean up orphaned brackets/parens
 
     // Clean up orphaned brackets/parens
     s = clean_orphaned_brackets(&s);
@@ -800,6 +880,43 @@ mod tests {
         assert!(!metadata.title.contains("9780817631383"));
         assert!(!metadata.title.contains("b3ab25f14db594eb0188171e0dd81250"));
         assert!(!metadata.title.contains("Anna's Archive"));
+    }
+
+    #[test]
+    fn test_strip_generic_series_prefix() {
+        let test_cases = vec![
+            (
+                "(Cambridge Studies in Advanced Mathematics 201) Jan van Neerven - Functional Analysis-Cambridge University Press.pdf",
+                "Jan van Neerven",
+                "Functional Analysis",
+            ),
+            (
+                "(Cambridge Studies in Advanced Mathematics 196) Fabien Durand, Dominique Perrin - Dimension Groups and Dynamical Systems_ Substitutions, Bratteli Diagrams and Cantor Systems-Cambridge University Press.pdf",
+                "Fabien Durand, Dominique Perrin",
+                "Dimension Groups and Dynamical Systems Substitutions, Bratteli Diagrams and Cantor Systems",
+            ),
+            (
+                "(CAMBRIDGE STUDIES IN ADVANCED MATHEMATICS 184) Ciprian Demeter - Fourier Restriction, Decoupling, and Applications-Cambridge University Press (2020).pdf",
+                "Ciprian Demeter",
+                "Fourier Restriction, Decoupling, and Applications",
+            ),
+            (
+                "(Cambridge studies in advanced mathematics 182) Nikolski N. - Toeplitz Matrices and Operators-Cambridge University Press.pdf",
+                "Nikolski N.",
+                "Toeplitz Matrices and Operators",
+            ),
+            (
+                "(Cambridge Studies in Advanced Mathematics 123) Gregory F. Lawler, Vlada Limic - Random walk_ A modern introduction-CUP (2010).pdf",
+                "Gregory F. Lawler, Vlada Limic",
+                "Random walk A modern introduction",
+            ),
+        ];
+
+        for (filename, expected_author, expected_title) in test_cases {
+            let metadata = parse_filename(filename, ".pdf").unwrap();
+            assert_eq!(metadata.authors, Some(expected_author.to_string()), "Failed author for {}", filename);
+            assert_eq!(metadata.title, expected_title, "Failed title for {}", filename);
+        }
     }
 
     #[test]

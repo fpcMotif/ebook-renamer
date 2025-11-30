@@ -410,3 +410,4 @@ func (p *Printer) TodoWritten(path string, dryRun bool) {
 		FilePathStyle.Render(path), MutedStyle.Render(mode))))
 }
 
+

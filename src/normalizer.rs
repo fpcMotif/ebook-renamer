@@ -9,7 +9,8 @@ pub struct ParsedMetadata {
     pub year: Option<u16>,
     pub series: Option<String>,      // e.g., "GTM 52"
     pub edition: Option<String>,     // e.g., "2nd ed"
-    pub volume: Option<String>,      // e.g., "Vol 2"
+    #[allow(dead_code)]
+    pub volume: Option<String>,      // e.g., "Vol 2" (volume info is kept in title)
 }
 
 pub fn normalize_files(mut files: Vec<FileInfo>) -> Result<Vec<FileInfo>> {

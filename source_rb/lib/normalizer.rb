@@ -239,15 +239,17 @@ module EbookRenamer
 
       # Remove trailing publisher info separated by dash
       # e.g. "Title - Publisher"
+      removed_dash_suffix = false
       if idx = s.rindex(' - ')
         suffix = s[(idx + 3)..-1]
         if is_publisher_or_series_info(suffix)
           s = s[0...idx]
+          removed_dash_suffix = true
         end
       end
 
       # Also handle just "-" without spaces if it looks like publisher
-      if idx = s.rindex('-')
+      if !removed_dash_suffix && (idx = s.rindex('-'))
         if idx > 0 && idx < s.length - 1
           suffix = s[(idx + 1)..-1].strip
           # Use stricter check for non-spaced dash to avoid stripping parts of title

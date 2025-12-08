@@ -1,0 +1,64 @@
+# .cursorrules - Development Assistant Instructions
+
+## Project Overview
+You are working on a multi-language ebook renaming tool with **perfect cross-language behavioral parity** between Rust, Go, Python, Ruby, Haskell, OCaml, and Zig implementations. All implementations must produce byte-for-byte identical JSON output for the same input files.
+
+## Project Structure
+- **Rust** (Primary): `/src/`, `Cargo.toml`
+- **Go**: `/source_go/`, `go.mod`
+- **Python**: `/source_py/`, `source_py/ebook_renamer/`
+- **Test fixtures**: `/test_output/`
+- **Documentation**: `/docs/`
+
+## Critical Rules
+1. **Behavioral Parity is SACRED**: When modifying core logic (normalization, duplicate detection, scanning), update ALL language implementations simultaneously
+2. **Cross-language testing**: Run `./tests/tools/test_cross_language.sh /path/to/test` after ANY core logic changes
+3. **Deterministic output**: JSON must be identical byte-for-byte across all implementations
+4. **Sort order matters**: Always sort arrays deterministically (see CLAUDE.md for exact sorting rules)
+
+## Development Commands
+```bash
+# Rust
+cargo build --release
+cargo test
+cargo run -- --dry-run --json /path
+
+# Go  
+cd source_go && go build -o ebook-renamer ./cmd/ebook-renamer
+cd source_go && go test ./...
+
+# Python
+python3 source_py/ebook-renamer.py --dry-run --json /path
+cd source_py && python3 -m pytest
+
+# Cross-language verification (CRITICAL)
+./tests/tools/test_cross_language.sh /path/to/test
+```
+
+## Module Architecture
+All implementations follow identical module structure:
+- Scanner: File system traversal and classification
+- Normalizer: Filename parsing and normalization
+- Duplicates: MD5-based duplicate detection
+- Todo: Generates todo.md (Chinese)
+- JSON Output: Deterministic serialization
+- TUI: Terminal user interface
+
+## Testing Approach
+1. Make changes to Rust first (primary implementation)
+2. Update Go, Python, Ruby, Haskell, OCaml, Zig implementations
+3. Verify all implementations pass their own tests
+4. Run cross-language test to verify byte-for-byte JSON parity
+5. If cross-language test fails, ALL implementations must be fixed
+
+## Language-Specific Details
+- **Rust**: Uses serde for JSON, ratatui for TUI, md5 crate
+- **Go**: Uses standard library JSON, bubbletea for TUI, crypto/md5
+- **Python**: Uses json module, rich for TUI, hashlib for MD5
+- All implementations skip hidden files, handle `.tar.gz`, detect `.download`/`.crdownload`
+- Paths use POSIX separators (`/`) in JSON output
+
+## Documentation
+- `docs/spec.md`: Canonical behavior specification (source of truth)
+- `docs/formatting_standards.md`: Detailed normalization rules with examples
+- `CLAUDE.md`: Complete development guide

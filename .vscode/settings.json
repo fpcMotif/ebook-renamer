@@ -1,0 +1,36 @@
+{
+  "rust-analyzer.checkOnSave.command": "cargo",
+  "rust-analyzer.cargo.features": "all",
+  "rust-analyzer.procMacro.enable": true,
+  "go.useLanguageServer": true,
+  "go.alternateTools": {
+    "go-langserver": "gopls"
+  },
+  "go.testFlags": ["-v"],
+  "python.defaultInterpreterPath": "/usr/bin/python3",
+  "python.linting.enabled": true,
+  "python.linting.mypyEnabled": true,
+  "python.formatting.provider": "black",
+  "python.testing.pytestEnabled": true,
+  "python.testing.unittestEnabled": false,
+  "editor.formatOnSave": true,
+  "files.associations": {
+    "*.rs": "rust",
+    "*.go": "go",
+    "*.py": "python"
+  },
+  "search.exclude": {
+    "**/target": true,
+    "**/.git": true,
+    "**/__pycache__": true,
+    "**/.stack-work": true,
+    "**/.zig-cache": true
+  },
+  "files.watcherExclude": {
+    "**/target/**": true,
+    "**/.git/objects/**": true,
+    "**/__pycache__/**": true,
+    "**/.stack-work/**": true,
+    "**/.zig-cache/**": true
+  }
+}

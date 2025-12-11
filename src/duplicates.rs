@@ -530,7 +530,7 @@ mod tests {
 
         // Two files with different original names but SAME new_name
         // And different content (simulated by not writing content, since we skip hash)
-        
+
         let f1 = FileInfo {
             original_path: tmp_dir.path().join("file1.pdf"),
             original_name: "file1.pdf".to_string(),
@@ -563,5 +563,583 @@ mod tests {
         assert_eq!(dup_groups.len(), 1, "Should find 1 duplicate group");
         assert_eq!(dup_groups[0].len(), 2, "Group should have 2 files");
         assert_eq!(clean_files.len(), 1, "Should keep 1 file");
+    }
+
+    // ========== EDGE CASE TESTS ==========
+
+    #[test]
+    fn test_detect_duplicates_empty_list() {
+        let files: Vec<FileInfo> = vec![];
+        let (dup_groups, clean_files) = detect_duplicates(files, false).unwrap();
+
+        assert!(dup_groups.is_empty());
+        assert!(clean_files.is_empty());
+    }
+
+    #[test]
+    fn test_detect_duplicates_single_file() {
+        let tmp_dir = TempDir::new().unwrap();
+        let file_path = tmp_dir.path().join("single.pdf");
+        fs::write(&file_path, "unique content").unwrap();
+
+        let files = vec![FileInfo {
+            original_path: file_path.clone(),
+            original_name: "single.pdf".to_string(),
+            extension: ".pdf".to_string(),
+            size: 14,
+            modified_time: std::time::SystemTime::now(),
+            is_failed_download: false,
+            is_too_small: false,
+            new_name: None,
+            new_path: file_path,
+        }];
+
+        let (dup_groups, clean_files) = detect_duplicates(files, false).unwrap();
+
+        // Single file cannot be a duplicate
+        assert!(dup_groups.is_empty());
+        assert_eq!(clean_files.len(), 1);
+    }
+
+    #[test]
+    fn test_detect_duplicates_mobi_excluded() {
+        // MOBI files should NOT be included in duplicate detection
+        let tmp_dir = TempDir::new().unwrap();
+
+        let file1 = tmp_dir.path().join("book1.mobi");
+        let file2 = tmp_dir.path().join("book2.mobi");
+        fs::write(&file1, "identical content").unwrap();
+        fs::write(&file2, "identical content").unwrap();
+
+        let files = vec![
+            FileInfo {
+                original_path: file1.clone(),
+                original_name: "book1.mobi".to_string(),
+                extension: ".mobi".to_string(),
+                size: 17,
+                modified_time: std::time::SystemTime::now(),
+                is_failed_download: false,
+                is_too_small: false,
+                new_name: None,
+                new_path: file1,
+            },
+            FileInfo {
+                original_path: file2.clone(),
+                original_name: "book2.mobi".to_string(),
+                extension: ".mobi".to_string(),
+                size: 17,
+                modified_time: std::time::SystemTime::now(),
+                is_failed_download: false,
+                is_too_small: false,
+                new_name: None,
+                new_path: file2,
+            },
+        ];
+
+        let (dup_groups, clean_files) = detect_duplicates(files, false).unwrap();
+
+        // MOBI files should be filtered out entirely
+        assert!(dup_groups.is_empty());
+        assert!(clean_files.is_empty()); // Filtered out
+    }
+
+    #[test]
+    fn test_detect_duplicates_three_way_duplicate() {
+        let tmp_dir = TempDir::new().unwrap();
+
+        let file1 = tmp_dir.path().join("book1.pdf");
+        let file2 = tmp_dir.path().join("book2.pdf");
+        let file3 = tmp_dir.path().join("book3.pdf");
+        fs::write(&file1, "identical content").unwrap();
+        fs::write(&file2, "identical content").unwrap();
+        fs::write(&file3, "identical content").unwrap();
+
+        let now = std::time::SystemTime::now();
+        let files = vec![
+            FileInfo {
+                original_path: file1.clone(),
+                original_name: "book1.pdf".to_string(),
+                extension: ".pdf".to_string(),
+                size: 17,
+                modified_time: now,
+                is_failed_download: false,
+                is_too_small: false,
+                new_name: Some("Book.pdf".to_string()),
+                new_path: tmp_dir.path().join("Book.pdf"),
+            },
+            FileInfo {
+                original_path: file2.clone(),
+                original_name: "book2.pdf".to_string(),
+                extension: ".pdf".to_string(),
+                size: 17,
+                modified_time: now,
+                is_failed_download: false,
+                is_too_small: false,
+                new_name: None,
+                new_path: file2.clone(),
+            },
+            FileInfo {
+                original_path: file3.clone(),
+                original_name: "book3.pdf".to_string(),
+                extension: ".pdf".to_string(),
+                size: 17,
+                modified_time: now,
+                is_failed_download: false,
+                is_too_small: false,
+                new_name: None,
+                new_path: file3.clone(),
+            },
+        ];
+
+        let (dup_groups, clean_files) = detect_duplicates(files, false).unwrap();
+
+        assert_eq!(dup_groups.len(), 1);
+        assert_eq!(dup_groups[0].len(), 3); // All three are duplicates
+        assert_eq!(clean_files.len(), 1); // Only one kept
+    }
+
+    #[test]
+    fn test_detect_duplicates_same_size_different_content() {
+        let tmp_dir = TempDir::new().unwrap();
+
+        // Two files with same size but different content
+        let file1 = tmp_dir.path().join("book1.pdf");
+        let file2 = tmp_dir.path().join("book2.pdf");
+        fs::write(&file1, "content A here").unwrap(); // 14 bytes
+        fs::write(&file2, "content B here").unwrap(); // 14 bytes
+
+        let now = std::time::SystemTime::now();
+        let files = vec![
+            FileInfo {
+                original_path: file1.clone(),
+                original_name: "book1.pdf".to_string(),
+                extension: ".pdf".to_string(),
+                size: 14,
+                modified_time: now,
+                is_failed_download: false,
+                is_too_small: false,
+                new_name: None,
+                new_path: file1.clone(),
+            },
+            FileInfo {
+                original_path: file2.clone(),
+                original_name: "book2.pdf".to_string(),
+                extension: ".pdf".to_string(),
+                size: 14,
+                modified_time: now,
+                is_failed_download: false,
+                is_too_small: false,
+                new_name: None,
+                new_path: file2.clone(),
+            },
+        ];
+
+        let (dup_groups, clean_files) = detect_duplicates(files, false).unwrap();
+
+        // Same size but different hash = not duplicates
+        assert!(dup_groups.is_empty());
+        assert_eq!(clean_files.len(), 2);
+    }
+
+    #[test]
+    fn test_detect_duplicates_different_sizes() {
+        let tmp_dir = TempDir::new().unwrap();
+
+        let file1 = tmp_dir.path().join("book1.pdf");
+        let file2 = tmp_dir.path().join("book2.pdf");
+        fs::write(&file1, "short").unwrap();
+        fs::write(&file2, "much longer content here").unwrap();
+
+        let now = std::time::SystemTime::now();
+        let files = vec![
+            FileInfo {
+                original_path: file1.clone(),
+                original_name: "book1.pdf".to_string(),
+                extension: ".pdf".to_string(),
+                size: 5,
+                modified_time: now,
+                is_failed_download: false,
+                is_too_small: false,
+                new_name: None,
+                new_path: file1.clone(),
+            },
+            FileInfo {
+                original_path: file2.clone(),
+                original_name: "book2.pdf".to_string(),
+                extension: ".pdf".to_string(),
+                size: 24,
+                modified_time: now,
+                is_failed_download: false,
+                is_too_small: false,
+                new_name: None,
+                new_path: file2.clone(),
+            },
+        ];
+
+        let (dup_groups, clean_files) = detect_duplicates(files, false).unwrap();
+
+        // Different sizes = cannot be duplicates, no hash computed
+        assert!(dup_groups.is_empty());
+        assert_eq!(clean_files.len(), 2);
+    }
+
+    #[test]
+    fn test_detect_duplicates_failed_download_excluded() {
+        let tmp_dir = TempDir::new().unwrap();
+
+        let file1 = tmp_dir.path().join("book1.pdf");
+        let file2 = tmp_dir.path().join("book2.pdf.download");
+        fs::write(&file1, "identical content").unwrap();
+        fs::write(&file2, "identical content").unwrap();
+
+        let now = std::time::SystemTime::now();
+        let files = vec![
+            FileInfo {
+                original_path: file1.clone(),
+                original_name: "book1.pdf".to_string(),
+                extension: ".pdf".to_string(),
+                size: 17,
+                modified_time: now,
+                is_failed_download: false,
+                is_too_small: false,
+                new_name: None,
+                new_path: file1.clone(),
+            },
+            FileInfo {
+                original_path: file2.clone(),
+                original_name: "book2.pdf.download".to_string(),
+                extension: ".download".to_string(),
+                size: 17,
+                modified_time: now,
+                is_failed_download: true,
+                is_too_small: false,
+                new_name: None,
+                new_path: file2.clone(),
+            },
+        ];
+
+        let (dup_groups, clean_files) = detect_duplicates(files, false).unwrap();
+
+        // .download files are filtered out by extension
+        assert!(dup_groups.is_empty());
+        assert_eq!(clean_files.len(), 1); // Only the .pdf remains
+    }
+
+    #[test]
+    fn test_detect_duplicates_too_small_excluded() {
+        let tmp_dir = TempDir::new().unwrap();
+
+        let file1 = tmp_dir.path().join("book1.pdf");
+        let file2 = tmp_dir.path().join("book2.pdf");
+        fs::write(&file1, "identical content").unwrap();
+        fs::write(&file2, "identical content").unwrap();
+
+        let now = std::time::SystemTime::now();
+        let files = vec![
+            FileInfo {
+                original_path: file1.clone(),
+                original_name: "book1.pdf".to_string(),
+                extension: ".pdf".to_string(),
+                size: 17,
+                modified_time: now,
+                is_failed_download: false,
+                is_too_small: false,
+                new_name: None,
+                new_path: file1.clone(),
+            },
+            FileInfo {
+                original_path: file2.clone(),
+                original_name: "book2.pdf".to_string(),
+                extension: ".pdf".to_string(),
+                size: 17,
+                modified_time: now,
+                is_failed_download: false,
+                is_too_small: true, // Marked as too small
+                new_name: None,
+                new_path: file2.clone(),
+            },
+        ];
+
+        let (dup_groups, clean_files) = detect_duplicates(files, false).unwrap();
+
+        // Too small files should be excluded from duplicate detection
+        assert!(dup_groups.is_empty());
+        assert_eq!(clean_files.len(), 2); // Both remain, but one couldn't be compared
+    }
+
+    #[test]
+    fn test_select_file_to_keep_combined_priority() {
+        let tmp_dir = TempDir::new().unwrap();
+        let now = std::time::SystemTime::now();
+        let older = now - Duration::from_secs(3600);
+
+        // File 1: Deep path, not normalized, newer
+        let f1 = FileInfo {
+            original_path: tmp_dir.path().join("a").join("b").join("c").join("deep.pdf"),
+            original_name: "deep.pdf".to_string(),
+            extension: ".pdf".to_string(),
+            size: 100,
+            modified_time: now,
+            is_failed_download: false,
+            is_too_small: false,
+            new_name: None,
+            new_path: tmp_dir.path().join("a").join("b").join("c").join("deep.pdf"),
+        };
+
+        // File 2: Shallow path, not normalized, older
+        let f2 = FileInfo {
+            original_path: tmp_dir.path().join("shallow.pdf"),
+            original_name: "shallow.pdf".to_string(),
+            extension: ".pdf".to_string(),
+            size: 100,
+            modified_time: older,
+            is_failed_download: false,
+            is_too_small: false,
+            new_name: None,
+            new_path: tmp_dir.path().join("shallow.pdf"),
+        };
+
+        // File 3: Deep path, normalized, older
+        let f3 = FileInfo {
+            original_path: tmp_dir.path().join("a").join("b").join("normalized.pdf"),
+            original_name: "normalized.pdf".to_string(),
+            extension: ".pdf".to_string(),
+            size: 100,
+            modified_time: older,
+            is_failed_download: false,
+            is_too_small: false,
+            new_name: Some("Clean Name.pdf".to_string()),
+            new_path: tmp_dir.path().join("a").join("b").join("Clean Name.pdf"),
+        };
+
+        let files = vec![f1, f2, f3];
+        let kept = select_file_to_keep(&files);
+
+        // Should prefer normalized (f3) over shallowest non-normalized (f2)
+        assert!(kept.new_name.is_some());
+    }
+
+    #[test]
+    fn test_strip_variant_suffix_edge_cases() {
+        // No parentheses
+        assert_eq!(strip_variant_suffix("Book Title.pdf"), "Book Title.pdf");
+
+        // Text in parentheses that's not a number
+        assert_eq!(strip_variant_suffix("Book (Author).pdf"), "Book (Author).pdf");
+
+        // Multiple variant markers - only last one stripped
+        assert_eq!(strip_variant_suffix("Book (1) (2).pdf"), "Book (1).pdf");
+
+        // No extension
+        assert_eq!(strip_variant_suffix("Book (1)"), "Book");
+
+        // Higher numbers
+        assert_eq!(strip_variant_suffix("Book (99).pdf"), "Book.pdf");
+    }
+
+    #[test]
+    fn test_detect_duplicates_epub_included() {
+        let tmp_dir = TempDir::new().unwrap();
+
+        let file1 = tmp_dir.path().join("book1.epub");
+        let file2 = tmp_dir.path().join("book2.epub");
+        fs::write(&file1, "identical content").unwrap();
+        fs::write(&file2, "identical content").unwrap();
+
+        let now = std::time::SystemTime::now();
+        let files = vec![
+            FileInfo {
+                original_path: file1.clone(),
+                original_name: "book1.epub".to_string(),
+                extension: ".epub".to_string(),
+                size: 17,
+                modified_time: now,
+                is_failed_download: false,
+                is_too_small: false,
+                new_name: None,
+                new_path: file1.clone(),
+            },
+            FileInfo {
+                original_path: file2.clone(),
+                original_name: "book2.epub".to_string(),
+                extension: ".epub".to_string(),
+                size: 17,
+                modified_time: now,
+                is_failed_download: false,
+                is_too_small: false,
+                new_name: None,
+                new_path: file2.clone(),
+            },
+        ];
+
+        let (dup_groups, clean_files) = detect_duplicates(files, false).unwrap();
+
+        // EPUB should be included
+        assert_eq!(dup_groups.len(), 1);
+        assert_eq!(clean_files.len(), 1);
+    }
+
+    #[test]
+    fn test_detect_duplicates_txt_included() {
+        let tmp_dir = TempDir::new().unwrap();
+
+        let file1 = tmp_dir.path().join("notes1.txt");
+        let file2 = tmp_dir.path().join("notes2.txt");
+        fs::write(&file1, "identical content").unwrap();
+        fs::write(&file2, "identical content").unwrap();
+
+        let now = std::time::SystemTime::now();
+        let files = vec![
+            FileInfo {
+                original_path: file1.clone(),
+                original_name: "notes1.txt".to_string(),
+                extension: ".txt".to_string(),
+                size: 17,
+                modified_time: now,
+                is_failed_download: false,
+                is_too_small: false,
+                new_name: None,
+                new_path: file1.clone(),
+            },
+            FileInfo {
+                original_path: file2.clone(),
+                original_name: "notes2.txt".to_string(),
+                extension: ".txt".to_string(),
+                size: 17,
+                modified_time: now,
+                is_failed_download: false,
+                is_too_small: false,
+                new_name: None,
+                new_path: file2.clone(),
+            },
+        ];
+
+        let (dup_groups, clean_files) = detect_duplicates(files, false).unwrap();
+
+        // TXT should be included
+        assert_eq!(dup_groups.len(), 1);
+        assert_eq!(clean_files.len(), 1);
+    }
+
+    #[test]
+    fn test_multiple_duplicate_groups() {
+        let tmp_dir = TempDir::new().unwrap();
+
+        // Group 1: identical A
+        let a1 = tmp_dir.path().join("a1.pdf");
+        let a2 = tmp_dir.path().join("a2.pdf");
+        fs::write(&a1, "content A").unwrap();
+        fs::write(&a2, "content A").unwrap();
+
+        // Group 2: identical B
+        let b1 = tmp_dir.path().join("b1.pdf");
+        let b2 = tmp_dir.path().join("b2.pdf");
+        fs::write(&b1, "content B").unwrap();
+        fs::write(&b2, "content B").unwrap();
+
+        let now = std::time::SystemTime::now();
+        let files = vec![
+            FileInfo {
+                original_path: a1.clone(),
+                original_name: "a1.pdf".to_string(),
+                extension: ".pdf".to_string(),
+                size: 9, // "content A".len()
+                modified_time: now,
+                is_failed_download: false,
+                is_too_small: false,
+                new_name: None,
+                new_path: a1.clone(),
+            },
+            FileInfo {
+                original_path: a2.clone(),
+                original_name: "a2.pdf".to_string(),
+                extension: ".pdf".to_string(),
+                size: 9,
+                modified_time: now,
+                is_failed_download: false,
+                is_too_small: false,
+                new_name: None,
+                new_path: a2.clone(),
+            },
+            FileInfo {
+                original_path: b1.clone(),
+                original_name: "b1.pdf".to_string(),
+                extension: ".pdf".to_string(),
+                size: 9, // Same size but different content
+                modified_time: now,
+                is_failed_download: false,
+                is_too_small: false,
+                new_name: None,
+                new_path: b1.clone(),
+            },
+            FileInfo {
+                original_path: b2.clone(),
+                original_name: "b2.pdf".to_string(),
+                extension: ".pdf".to_string(),
+                size: 9,
+                modified_time: now,
+                is_failed_download: false,
+                is_too_small: false,
+                new_name: None,
+                new_path: b2.clone(),
+            },
+        ];
+
+        let (dup_groups, clean_files) = detect_duplicates(files, false).unwrap();
+
+        // Should find 2 groups
+        assert_eq!(dup_groups.len(), 2);
+        // Should keep 2 files (one from each group)
+        assert_eq!(clean_files.len(), 2);
+    }
+
+    #[test]
+    fn test_select_file_to_keep_same_depth_different_time() {
+        let tmp_dir = TempDir::new().unwrap();
+        let now = std::time::SystemTime::now();
+        let older = now - Duration::from_secs(7200); // 2 hours ago
+        let oldest = now - Duration::from_secs(14400); // 4 hours ago
+
+        let f1 = FileInfo {
+            original_path: tmp_dir.path().join("file1.pdf"),
+            original_name: "file1.pdf".to_string(),
+            extension: ".pdf".to_string(),
+            size: 100,
+            modified_time: oldest,
+            is_failed_download: false,
+            is_too_small: false,
+            new_name: None,
+            new_path: tmp_dir.path().join("file1.pdf"),
+        };
+
+        let f2 = FileInfo {
+            original_path: tmp_dir.path().join("file2.pdf"),
+            original_name: "file2.pdf".to_string(),
+            extension: ".pdf".to_string(),
+            size: 100,
+            modified_time: now, // Newest
+            is_failed_download: false,
+            is_too_small: false,
+            new_name: None,
+            new_path: tmp_dir.path().join("file2.pdf"),
+        };
+
+        let f3 = FileInfo {
+            original_path: tmp_dir.path().join("file3.pdf"),
+            original_name: "file3.pdf".to_string(),
+            extension: ".pdf".to_string(),
+            size: 100,
+            modified_time: older,
+            is_failed_download: false,
+            is_too_small: false,
+            new_name: None,
+            new_path: tmp_dir.path().join("file3.pdf"),
+        };
+
+        let files = vec![f1, f2, f3];
+        let kept = select_file_to_keep(&files);
+
+        // All same depth and none normalized, should keep newest (f2)
+        assert_eq!(kept.original_name, "file2.pdf");
     }
 }

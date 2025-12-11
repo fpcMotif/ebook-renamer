@@ -277,3 +277,143 @@ func TestGraduateTextsSeriesRemoval(t *testing.T) {
 	assert.Equal(t, uint16(1978), *metadata.Year)
 	assert.NotContains(t, metadata.Title, "Graduate Texts")
 }
+
+// ========== EDGE CASE TESTS ==========
+
+func TestEmptyFilename(t *testing.T) {
+	metadata, err := parseFilename(".pdf", ".pdf")
+	assert.NoError(t, err)
+	assert.True(t, metadata.Title == "" || len(metadata.Title) == 0)
+}
+
+func TestTitleOnlyNoAuthor(t *testing.T) {
+	metadata, err := parseFilename("Introduction to Mathematics.pdf", ".pdf")
+	assert.NoError(t, err)
+	assert.Nil(t, metadata.Authors)
+	assert.Equal(t, "Introduction to Mathematics", metadata.Title)
+}
+
+func TestMultipleYearsRightmost(t *testing.T) {
+	// Should extract the rightmost year (2020), not the first (2018)
+	metadata, err := parseFilename("Title (2018 Edition) (2020, Publisher).pdf", ".pdf")
+	assert.NoError(t, err)
+	assert.NotNil(t, metadata.Year)
+	assert.Equal(t, uint16(2020), *metadata.Year)
+}
+
+func TestVeryLongFilename(t *testing.T) {
+	longTitle := strings.Repeat("A", 200)
+	filename := longTitle + ".pdf"
+	metadata, err := parseFilename(filename, ".pdf")
+	assert.NoError(t, err)
+	assert.NotEmpty(t, metadata.Title)
+}
+
+func TestSpecialCharactersInTitle(t *testing.T) {
+	metadata, err := parseFilename("Author - Title with & symbols, (special) chars!.pdf", ".pdf")
+	assert.NoError(t, err)
+	assert.NotNil(t, metadata.Authors)
+	assert.Equal(t, "Author", *metadata.Authors)
+}
+
+func TestCyrillicAuthor(t *testing.T) {
+	metadata, err := parseFilename("Теория категорий (Сергей Иванов).pdf", ".pdf")
+	assert.NoError(t, err)
+	assert.NotNil(t, metadata.Authors)
+	assert.Equal(t, "Сергей Иванов", *metadata.Authors)
+}
+
+func TestDoubleDashSeparator(t *testing.T) {
+	metadata, err := parseFilename("Author Name -- Book Title.pdf", ".pdf")
+	assert.NoError(t, err)
+	assert.NotNil(t, metadata.Authors)
+	assert.Equal(t, "Author Name", *metadata.Authors)
+	assert.Equal(t, "Book Title", metadata.Title)
+}
+
+func TestMultipleDashesInTitle(t *testing.T) {
+	metadata, err := parseFilename("Self-Taught Programmer - A Step-by-Step Guide.pdf", ".pdf")
+	assert.NoError(t, err)
+	assert.Contains(t, metadata.Title, "Step")
+}
+
+func TestEpubExtension(t *testing.T) {
+	metadata, err := parseFilename("Author - Title.epub", ".epub")
+	assert.NoError(t, err)
+	assert.NotNil(t, metadata.Authors)
+	assert.Equal(t, "Author", *metadata.Authors)
+	assert.Equal(t, "Title", metadata.Title)
+}
+
+func TestTxtExtension(t *testing.T) {
+	metadata, err := parseFilename("Author - Title.txt", ".txt")
+	assert.NoError(t, err)
+	assert.NotNil(t, metadata.Authors)
+	assert.Equal(t, "Author", *metadata.Authors)
+	assert.Equal(t, "Title", metadata.Title)
+}
+
+func TestNoExtension(t *testing.T) {
+	metadata, err := parseFilename("Author - Title", "")
+	assert.NoError(t, err)
+	assert.NotNil(t, metadata.Authors)
+	assert.Equal(t, "Author", *metadata.Authors)
+	assert.Equal(t, "Title", metadata.Title)
+}
+
+func TestJapaneseTitle(t *testing.T) {
+	metadata, err := parseFilename("数学入門 (山田太郎).pdf", ".pdf")
+	assert.NoError(t, err)
+	assert.NotNil(t, metadata.Authors)
+	assert.Equal(t, "山田太郎", *metadata.Authors)
+	assert.Contains(t, metadata.Title, "数学入門")
+}
+
+func TestKoreanTitle(t *testing.T) {
+	metadata, err := parseFilename("수학 입문 (김철수).pdf", ".pdf")
+	assert.NoError(t, err)
+	assert.NotNil(t, metadata.Authors)
+	assert.Equal(t, "김철수", *metadata.Authors)
+}
+
+func TestMixedLanguageTitle(t *testing.T) {
+	metadata, err := parseFilename("Introduction to 数学 Mathematics.pdf", ".pdf")
+	assert.NoError(t, err)
+	assert.Contains(t, metadata.Title, "数学")
+	assert.Contains(t, metadata.Title, "Mathematics")
+}
+
+func TestCleanTitleTrailingDash(t *testing.T) {
+	result := cleanTitle("Title -")
+	assert.Equal(t, "Title", result)
+}
+
+func TestCleanTitleTrailingColon(t *testing.T) {
+	result := cleanTitle("Title :")
+	assert.Equal(t, "Title", result)
+}
+
+func TestCleanTitleTrailingSemicolon(t *testing.T) {
+	result := cleanTitle("Title ;")
+	assert.Equal(t, "Title", result)
+}
+
+func TestWhitespaceOnlyTitle(t *testing.T) {
+	result := cleanTitle("   ")
+	assert.Empty(t, result)
+}
+
+func TestNestedBracketsAndParens(t *testing.T) {
+	metadata, err := parseFilename("Title ((nested (very nested)) text).pdf", ".pdf")
+	assert.NoError(t, err)
+	assert.NotEmpty(t, metadata.Title)
+}
+
+func TestHashPatternDetection(t *testing.T) {
+	metadata, err := parseFilename(
+		"Masaki Kashiwara - Systems of microdifferential equations -- 9780817631383 -- b3ab25f14db594eb0188171e0dd81250 -- Anna's Archive.pdf",
+		".pdf",
+	)
+	assert.NoError(t, err)
+	assert.NotContains(t, metadata.Title, "b3ab25f14db594eb0188171e0dd81250")
+}

@@ -408,4 +408,407 @@ Other text
 
         Ok(())
     }
+
+    // ========== EDGE CASE TESTS ==========
+
+    #[test]
+    fn test_extract_items_from_empty_md() {
+        let items = extract_items_from_md("");
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn test_extract_items_skips_generic_checklist() {
+        let md_content = r#"# Todo
+
+## Tasks
+- [ ] 检查所有未完成下载文件
+- [ ] 重新下载过小文件
+- [ ] Custom Item
+"#;
+        let items = extract_items_from_md(md_content);
+        // Should only include "Custom Item", not the generic ones
+        assert_eq!(items.len(), 1);
+        assert!(items[0].contains("Custom Item"));
+    }
+
+    #[test]
+    fn test_todolist_with_custom_path() -> Result<()> {
+        let tmp_dir = TempDir::new()?;
+        let custom_path = tmp_dir.path().join("custom_todo.md");
+        let target_dir = tmp_dir.path().to_path_buf();
+
+        let todo_list = TodoList::new(&Some(custom_path.clone()), &target_dir)?;
+
+        assert_eq!(todo_list.todo_file_path, custom_path);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_add_file_issue_too_small() -> Result<()> {
+        let tmp_dir = TempDir::new()?;
+        let mut todo_list = TodoList::new(&None, &tmp_dir.path().to_path_buf())?;
+
+        let file_info = FileInfo {
+            original_path: tmp_dir.path().join("tiny.pdf"),
+            original_name: "tiny.pdf".to_string(),
+            extension: ".pdf".to_string(),
+            size: 100, // Will be shown in message
+            modified_time: std::time::SystemTime::now(),
+            is_failed_download: false,
+            is_too_small: true,
+            new_name: None,
+            new_path: tmp_dir.path().join("tiny.pdf"),
+        };
+
+        todo_list.add_failed_download(&file_info)?;
+
+        assert_eq!(todo_list.small_files.len(), 1);
+        assert!(todo_list.small_files[0].contains("tiny.pdf"));
+        assert!(todo_list.small_files[0].contains("100")); // Size in bytes
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_add_file_issue_read_error() -> Result<()> {
+        let tmp_dir = TempDir::new()?;
+        let mut todo_list = TodoList::new(&None, &tmp_dir.path().to_path_buf())?;
+
+        let file_info = FileInfo {
+            original_path: tmp_dir.path().join("unreadable.pdf"),
+            original_name: "unreadable.pdf".to_string(),
+            extension: ".pdf".to_string(),
+            size: 100,
+            modified_time: std::time::SystemTime::now(),
+            is_failed_download: false,
+            is_too_small: false,
+            new_name: None,
+            new_path: tmp_dir.path().join("unreadable.pdf"),
+        };
+
+        todo_list.add_file_issue(&file_info, FileIssue::ReadError)?;
+
+        assert_eq!(todo_list.other_issues.len(), 1);
+        assert!(todo_list.other_issues[0].contains("无法读取"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_add_file_issue_invalid_extension() -> Result<()> {
+        let tmp_dir = TempDir::new()?;
+        let mut todo_list = TodoList::new(&None, &tmp_dir.path().to_path_buf())?;
+
+        let file_info = FileInfo {
+            original_path: tmp_dir.path().join("weird.xyz"),
+            original_name: "weird.xyz".to_string(),
+            extension: ".xyz".to_string(),
+            size: 100,
+            modified_time: std::time::SystemTime::now(),
+            is_failed_download: false,
+            is_too_small: false,
+            new_name: None,
+            new_path: tmp_dir.path().join("weird.xyz"),
+        };
+
+        todo_list.add_file_issue(&file_info, FileIssue::InvalidExtension)?;
+
+        assert_eq!(todo_list.other_issues.len(), 1);
+        assert!(todo_list.other_issues[0].contains(".xyz"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_duplicate_item_prevention() -> Result<()> {
+        let tmp_dir = TempDir::new()?;
+        let mut todo_list = TodoList::new(&None, &tmp_dir.path().to_path_buf())?;
+
+        let file_info = FileInfo {
+            original_path: tmp_dir.path().join("fail.download"),
+            original_name: "fail.download".to_string(),
+            extension: ".download".to_string(),
+            size: 0,
+            modified_time: std::time::SystemTime::now(),
+            is_failed_download: true,
+            is_too_small: false,
+            new_name: None,
+            new_path: tmp_dir.path().join("fail.download"),
+        };
+
+        // Add same item twice
+        todo_list.add_failed_download(&file_info)?;
+        todo_list.add_failed_download(&file_info)?;
+
+        // Should only have one item
+        assert_eq!(todo_list.failed_downloads.len(), 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_unicode_filename_in_todo() -> Result<()> {
+        let tmp_dir = TempDir::new()?;
+        let mut todo_list = TodoList::new(&None, &tmp_dir.path().to_path_buf())?;
+
+        let file_info = FileInfo {
+            original_path: tmp_dir.path().join("数学入門.pdf.download"),
+            original_name: "数学入門.pdf.download".to_string(),
+            extension: ".download".to_string(),
+            size: 0,
+            modified_time: std::time::SystemTime::now(),
+            is_failed_download: true,
+            is_too_small: false,
+            new_name: None,
+            new_path: tmp_dir.path().join("数学入門.pdf.download"),
+        };
+
+        todo_list.add_failed_download(&file_info)?;
+
+        assert!(todo_list.failed_downloads[0].contains("数学入門"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_analyze_file_integrity_skips_failed_download() -> Result<()> {
+        let tmp_dir = TempDir::new()?;
+        let mut todo_list = TodoList::new(&None, &tmp_dir.path().to_path_buf())?;
+
+        let file_info = FileInfo {
+            original_path: tmp_dir.path().join("fail.pdf"),
+            original_name: "fail.pdf".to_string(),
+            extension: ".pdf".to_string(),
+            size: 100,
+            modified_time: std::time::SystemTime::now(),
+            is_failed_download: true, // Already marked as failed
+            is_too_small: false,
+            new_name: None,
+            new_path: tmp_dir.path().join("fail.pdf"),
+        };
+
+        todo_list.analyze_file_integrity(&file_info)?;
+
+        // Should not add to corrupted_files because it's already a failed download
+        assert!(todo_list.corrupted_files.is_empty());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_analyze_file_integrity_skips_too_small() -> Result<()> {
+        let tmp_dir = TempDir::new()?;
+        let mut todo_list = TodoList::new(&None, &tmp_dir.path().to_path_buf())?;
+
+        let file_info = FileInfo {
+            original_path: tmp_dir.path().join("tiny.pdf"),
+            original_name: "tiny.pdf".to_string(),
+            extension: ".pdf".to_string(),
+            size: 10,
+            modified_time: std::time::SystemTime::now(),
+            is_failed_download: false,
+            is_too_small: true, // Already marked as too small
+            new_name: None,
+            new_path: tmp_dir.path().join("tiny.pdf"),
+        };
+
+        todo_list.analyze_file_integrity(&file_info)?;
+
+        // Should not add to corrupted_files because it's already too small
+        assert!(todo_list.corrupted_files.is_empty());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_analyze_file_integrity_non_pdf_file() -> Result<()> {
+        let tmp_dir = TempDir::new()?;
+        let epub_path = tmp_dir.path().join("book.epub");
+        fs::write(&epub_path, "not a pdf")?;
+
+        let mut todo_list = TodoList::new(&None, &tmp_dir.path().to_path_buf())?;
+
+        let file_info = FileInfo {
+            original_path: epub_path.clone(),
+            original_name: "book.epub".to_string(),
+            extension: ".epub".to_string(),
+            size: 100,
+            modified_time: std::time::SystemTime::now(),
+            is_failed_download: false,
+            is_too_small: false,
+            new_name: None,
+            new_path: epub_path,
+        };
+
+        todo_list.analyze_file_integrity(&file_info)?;
+
+        // EPUB files should not be checked for PDF header
+        assert!(todo_list.corrupted_files.is_empty());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_remove_file_case_insensitive() -> Result<()> {
+        let tmp_dir = TempDir::new()?;
+        let mut todo_list = TodoList::new(&None, &tmp_dir.path().to_path_buf())?;
+
+        // Add an item
+        let item = "重新下载: TestFile.PDF (未完成下载)".to_string();
+        todo_list.failed_downloads.push(item.clone());
+        todo_list.items.push(item);
+
+        // Remove with different case
+        todo_list.remove_file_from_todo("testfile.pdf");
+
+        assert!(todo_list.failed_downloads.is_empty());
+        assert!(todo_list.items.is_empty());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_write_generates_sections() -> Result<()> {
+        let tmp_dir = TempDir::new()?;
+        let todo_path = tmp_dir.path().join("test_todo.md");
+
+        let todo_list = TodoList {
+            items: vec!["item1".to_string(), "item2".to_string()],
+            todo_file_path: todo_path.clone(),
+            failed_downloads: vec!["Failed download item".to_string()],
+            small_files: vec!["Small file item".to_string()],
+            corrupted_files: vec!["Corrupted file item".to_string()],
+            other_issues: vec!["Other issue item".to_string()],
+        };
+
+        todo_list.write()?;
+
+        let content = fs::read_to_string(&todo_path)?;
+
+        // Check all sections are present
+        assert!(content.contains("🔄 未完成下载文件"));
+        assert!(content.contains("📁 异常小文件"));
+        assert!(content.contains("🚨 损坏的PDF文件"));
+        assert!(content.contains("⚠️ 其他文件问题"));
+        assert!(content.contains("更新时间:"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_write_empty_todo_shows_success_message() -> Result<()> {
+        let tmp_dir = TempDir::new()?;
+        let todo_path = tmp_dir.path().join("test_todo.md");
+
+        let todo_list = TodoList {
+            items: vec![],
+            todo_file_path: todo_path.clone(),
+            failed_downloads: vec![],
+            small_files: vec![],
+            corrupted_files: vec![],
+            other_issues: vec![],
+        };
+
+        todo_list.write()?;
+
+        let content = fs::read_to_string(&todo_path)?;
+
+        // Should show success message when no issues
+        assert!(content.contains("✅ 所有文件已检查完毕"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_validate_pdf_header_too_short() {
+        let tmp_dir = TempDir::new().unwrap();
+        let pdf_path = tmp_dir.path().join("short.pdf");
+        // Write content shorter than 5 bytes
+        fs::write(&pdf_path, "PDF").unwrap();
+
+        let result = validate_pdf_header(&pdf_path);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_pdf_header_different_versions() -> Result<()> {
+        let tmp_dir = TempDir::new()?;
+
+        // PDF 1.4
+        let pdf14 = tmp_dir.path().join("pdf14.pdf");
+        fs::write(&pdf14, "%PDF-1.4 content here")?;
+        assert!(validate_pdf_header(&pdf14).is_ok());
+
+        // PDF 1.7
+        let pdf17 = tmp_dir.path().join("pdf17.pdf");
+        fs::write(&pdf17, "%PDF-1.7 content here")?;
+        assert!(validate_pdf_header(&pdf17).is_ok());
+
+        // PDF 2.0
+        let pdf20 = tmp_dir.path().join("pdf20.pdf");
+        fs::write(&pdf20, "%PDF-2.0 content here")?;
+        assert!(validate_pdf_header(&pdf20).is_ok());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_extract_items_mixed_checkbox_states() {
+        let md_content = r#"# Todo
+
+- [ ] Unchecked item 1
+- [x] Checked item 2
+- [ ] Unchecked item 3
+"#;
+        let items = extract_items_from_md(md_content);
+        // Should extract all items regardless of checkbox state
+        assert_eq!(items.len(), 3);
+    }
+
+    #[test]
+    fn test_todolist_reads_existing_items() -> Result<()> {
+        let tmp_dir = TempDir::new()?;
+        let todo_path = tmp_dir.path().join("todo.md");
+
+        // Create existing todo.md
+        let existing_content = r#"# Tasks
+- [ ] Existing item 1
+- [ ] Existing item 2
+"#;
+        fs::write(&todo_path, existing_content)?;
+
+        let todo_list = TodoList::new(&Some(todo_path), &tmp_dir.path().to_path_buf())?;
+
+        // Should have read existing items
+        assert_eq!(todo_list.items.len(), 2);
+        assert!(todo_list.items[0].contains("Existing item 1"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_special_characters_in_filename() -> Result<()> {
+        let tmp_dir = TempDir::new()?;
+        let mut todo_list = TodoList::new(&None, &tmp_dir.path().to_path_buf())?;
+
+        let file_info = FileInfo {
+            original_path: tmp_dir.path().join("Book (Author) [2020] & More.pdf.download"),
+            original_name: "Book (Author) [2020] & More.pdf.download".to_string(),
+            extension: ".download".to_string(),
+            size: 0,
+            modified_time: std::time::SystemTime::now(),
+            is_failed_download: true,
+            is_too_small: false,
+            new_name: None,
+            new_path: tmp_dir.path().join("Book (Author) [2020] & More.pdf.download"),
+        };
+
+        todo_list.add_failed_download(&file_info)?;
+
+        assert!(todo_list.failed_downloads[0].contains("Book (Author) [2020] & More"));
+
+        Ok(())
+    }
 }

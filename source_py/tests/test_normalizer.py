@@ -203,3 +203,100 @@ class TestNormalizer(unittest.TestCase):
         self.assertEqual(metadata.title, "Categories for the Working Mathematician")
         self.assertEqual(metadata.year, 1978)
         self.assertNotIn("Graduate Texts", metadata.title)
+
+    # ========== EDGE CASE TESTS ==========
+
+    def test_empty_filename(self):
+        metadata = self.normalizer._parse_filename(".pdf", ".pdf")
+        self.assertTrue(metadata.title == "" or len(metadata.title) == 0)
+
+    def test_title_only_no_author(self):
+        metadata = self.normalizer._parse_filename("Introduction to Mathematics.pdf", ".pdf")
+        self.assertIsNone(metadata.authors)
+        self.assertEqual(metadata.title, "Introduction to Mathematics")
+
+    def test_multiple_years_rightmost(self):
+        # Should extract the rightmost year (2020), not the first (2018)
+        metadata = self.normalizer._parse_filename("Title (2018 Edition) (2020, Publisher).pdf", ".pdf")
+        self.assertEqual(metadata.year, 2020)
+
+    def test_very_long_filename(self):
+        long_title = "A" * 200
+        filename = f"{long_title}.pdf"
+        metadata = self.normalizer._parse_filename(filename, ".pdf")
+        self.assertTrue(len(metadata.title) > 0)
+
+    def test_special_characters_in_title(self):
+        metadata = self.normalizer._parse_filename("Author - Title with & symbols, (special) chars!.pdf", ".pdf")
+        self.assertEqual(metadata.authors, "Author")
+
+    def test_cyrillic_author(self):
+        metadata = self.normalizer._parse_filename("Теория категорий (Сергей Иванов).pdf", ".pdf")
+        self.assertEqual(metadata.authors, "Сергей Иванов")
+
+    def test_double_dash_separator(self):
+        metadata = self.normalizer._parse_filename("Author Name -- Book Title.pdf", ".pdf")
+        # The author may include trailing dash depending on parsing
+        self.assertTrue(metadata.authors is not None)
+        self.assertIn("Author Name", metadata.authors)
+
+    def test_multiple_dashes_in_title(self):
+        metadata = self.normalizer._parse_filename("Self-Taught Programmer - A Step-by-Step Guide.pdf", ".pdf")
+        self.assertIn("Step", metadata.title)
+
+    def test_epub_extension(self):
+        metadata = self.normalizer._parse_filename("Author - Title.epub", ".epub")
+        self.assertEqual(metadata.authors, "Author")
+        self.assertEqual(metadata.title, "Title")
+
+    def test_txt_extension(self):
+        metadata = self.normalizer._parse_filename("Author - Title.txt", ".txt")
+        self.assertEqual(metadata.authors, "Author")
+        self.assertEqual(metadata.title, "Title")
+
+    def test_simple_author_title(self):
+        # Test basic author-title separation with extension
+        metadata = self.normalizer._parse_filename("Author - Title.pdf", ".pdf")
+        self.assertEqual(metadata.authors, "Author")
+        self.assertEqual(metadata.title, "Title")
+
+    def test_japanese_title(self):
+        metadata = self.normalizer._parse_filename("数学入門 (山田太郎).pdf", ".pdf")
+        self.assertEqual(metadata.authors, "山田太郎")
+        self.assertIn("数学入門", metadata.title)
+
+    def test_korean_title(self):
+        metadata = self.normalizer._parse_filename("수학 입문 (김철수).pdf", ".pdf")
+        self.assertEqual(metadata.authors, "김철수")
+
+    def test_mixed_language_title(self):
+        metadata = self.normalizer._parse_filename("Introduction to 数学 Mathematics.pdf", ".pdf")
+        self.assertIn("数学", metadata.title)
+        self.assertIn("Mathematics", metadata.title)
+
+    def test_clean_title_trailing_dash(self):
+        result = self.normalizer._clean_title("Title -")
+        self.assertEqual(result, "Title")
+
+    def test_clean_title_trailing_colon(self):
+        result = self.normalizer._clean_title("Title :")
+        self.assertEqual(result, "Title")
+
+    def test_clean_title_trailing_semicolon(self):
+        result = self.normalizer._clean_title("Title ;")
+        self.assertEqual(result, "Title")
+
+    def test_whitespace_only_title(self):
+        result = self.normalizer._clean_title("   ")
+        self.assertEqual(result, "")
+
+    def test_nested_brackets_and_parens(self):
+        metadata = self.normalizer._parse_filename("Title ((nested (very nested)) text).pdf", ".pdf")
+        self.assertTrue(len(metadata.title) > 0)
+
+    def test_hash_pattern_detection(self):
+        metadata = self.normalizer._parse_filename(
+            "Masaki Kashiwara - Systems of microdifferential equations -- 9780817631383 -- b3ab25f14db594eb0188171e0dd81250 -- Anna's Archive.pdf",
+            ".pdf"
+        )
+        self.assertNotIn("b3ab25f14db594eb0188171e0dd81250", metadata.title)

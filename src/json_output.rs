@@ -266,4 +266,102 @@ mod tests {
         #[cfg(not(windows))]
         assert_eq!(output.renames[0].from, "subdir/file.pdf");
     }
+
+    #[test]
+    fn test_deterministic_sorting_and_filtering() {
+        let target_dir = PathBuf::from("/data");
+
+        let clean_files = vec![
+            FileInfo {
+                original_path: target_dir.join("b.pdf"),
+                original_name: "b.pdf".to_string(),
+                extension: ".pdf".to_string(),
+                size: 1,
+                modified_time: SystemTime::now(),
+                is_failed_download: false,
+                is_too_small: false,
+                new_name: Some("b_new.pdf".to_string()),
+                new_path: target_dir.join("b_new.pdf"),
+            },
+            FileInfo {
+                original_path: target_dir.join("a.pdf"),
+                original_name: "a.pdf".to_string(),
+                extension: ".pdf".to_string(),
+                size: 1,
+                modified_time: SystemTime::now(),
+                is_failed_download: false,
+                is_too_small: false,
+                new_name: None, // Should be filtered out
+                new_path: target_dir.join("a.pdf"),
+            },
+            FileInfo {
+                original_path: target_dir.join("c.pdf"),
+                original_name: "c.pdf".to_string(),
+                extension: ".pdf".to_string(),
+                size: 1,
+                modified_time: SystemTime::now(),
+                is_failed_download: false,
+                is_too_small: false,
+                new_name: Some("c_new.pdf".to_string()),
+                new_path: target_dir.join("c_new.pdf"),
+            },
+        ];
+
+        let duplicate_groups = vec![
+            vec![
+                target_dir.join("keep2.pdf"),
+                target_dir.join("delete_b.pdf"),
+                target_dir.join("delete_a.pdf"),
+            ],
+            vec![target_dir.join("keep1.pdf"), target_dir.join("delete_c.pdf")],
+        ];
+
+        let files_to_delete = vec![
+            target_dir.join("zz.pdf"),
+            target_dir.join("aa.pdf"),
+        ];
+
+        let todo_items = vec![
+            ("B".to_string(), "todo2.pdf".to_string(), "later".to_string()),
+            ("A".to_string(), "todo1.pdf".to_string(), "soon".to_string()),
+        ];
+
+        let output = OperationsOutput::from_results(
+            clean_files,
+            duplicate_groups,
+            files_to_delete,
+            todo_items,
+            &target_dir,
+        )
+        .unwrap();
+
+        // Renames should be sorted and skip entries without a new name
+        assert_eq!(output.renames.len(), 2);
+        assert_eq!(output.renames[0].from, "b.pdf");
+        assert_eq!(output.renames[1].from, "c.pdf");
+
+        // Duplicate groups sorted by keep, and delete paths sorted within each group
+        assert_eq!(output.duplicate_deletes.len(), 2);
+        assert_eq!(output.duplicate_deletes[0].keep, "keep1.pdf");
+        assert_eq!(output.duplicate_deletes[0].delete, vec!["delete_c.pdf".to_string()]);
+        assert_eq!(output.duplicate_deletes[1].keep, "keep2.pdf");
+        assert_eq!(
+            output.duplicate_deletes[1].delete,
+            vec!["delete_a.pdf".to_string(), "delete_b.pdf".to_string()]
+        );
+
+        // Files to delete sorted by path
+        assert_eq!(
+            output.small_or_corrupted_deletes.iter().map(|d| d.path.clone()).collect::<Vec<_>>(),
+            vec!["aa.pdf".to_string(), "zz.pdf".to_string()]
+        );
+
+        // Todo items sorted by category then file
+        assert_eq!(
+            output.todo_items.iter().map(|t| t.category.clone()).collect::<Vec<_>>(),
+            vec!["A".to_string(), "B".to_string()]
+        );
+        assert_eq!(output.todo_items[0].file, "todo1.pdf");
+        assert_eq!(output.todo_items[1].file, "todo2.pdf");
+    }
 }

@@ -128,16 +128,23 @@ pub struct Args {
 impl Args {
     #[allow(dead_code)]
     pub fn get_extensions(&self) -> Vec<String> {
-        if let Some(ref exts) = self.extensions {
-            exts.split(',')
-                .map(|s| format!(".{}", s.trim().trim_start_matches('.')))
-                .collect()
-        } else {
-            vec![
+        match self.extensions {
+            Some(ref exts) => exts
+                .split(',')
+                .filter_map(|s| {
+                    let cleaned = s.trim().trim_start_matches('.');
+                    if cleaned.is_empty() {
+                        None
+                    } else {
+                        Some(format!(".{}", cleaned))
+                    }
+                })
+                .collect(),
+            None => vec![
                 ".pdf".to_string(),
                 ".epub".to_string(),
                 ".txt".to_string(),
-            ]
+            ],
         }
     }
 }
@@ -226,5 +233,30 @@ mod tests {
         assert_eq!(exts.len(), 2);
         assert!(exts.contains(&".mobi".to_string()));
         assert!(exts.contains(&".azw3".to_string()));
+    }
+
+    #[test]
+    fn test_custom_extensions_ignore_empty_entries() {
+        let args = Args {
+            path: PathBuf::from("."),
+            dry_run: false,
+            max_depth: 0,
+            no_recursive: false,
+            extensions: Some(" , pdf, , .epub ,".to_string()),
+            no_delete: false,
+            todo_file: None,
+            log_file: None,
+            preserve_unicode: false,
+            fetch_arxiv: false,
+            verbose: false,
+            delete_small: false,
+            clean_failed: false,
+            json: false,
+            skip_cloud_hash: false,
+            cleanup_downloads: false,
+        };
+
+        let exts = args.get_extensions();
+        assert_eq!(exts, vec![".pdf".to_string(), ".epub".to_string()]);
     }
 }

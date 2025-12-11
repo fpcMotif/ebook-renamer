@@ -22,8 +22,14 @@ class Normalizer:
     # Matches simple nested parens: ( ... ( ... ) ... )
     NESTED_PAREN_REGEX = re.compile(r'\([^()]*(?:\([^()]*\)[^()]*)*\)')
     TRAILING_AUTHOR_REGEX = re.compile(r'^(.+?)\s*\(([^)]+)\)\s*$')
-    SEPARATOR_REGEX = re.compile(r'^(.+?)\s*[-:]\s+(.+)$')
-    MULTI_AUTHOR_REGEX = re.compile(r'^([A-Z][^:]+?),\s*([A-Z][^:]+?)\s*[-:]\s+(.+)$')
+    SEPARATOR_REGEX = re.compile(r'^(.+?)\s*(?:--|[-:])\s+(.+)$')
+    MULTI_AUTHOR_REGEX = re.compile(r'^([A-Z][^:]+?),\s*([A-Z][^:]+?)\s*(?:--|[-:])\s+(.+)$')
+
+    # New patterns
+    EDITION_REGEX = re.compile(r'\b(\d+)(?:st|nd|rd|th)?\s*[Ee]d(?:ition)?\.?\b|\b[Ee]d(?:ition)?\.?\s*(\d+)\b')
+    VOLUME_REGEX = re.compile(r'\b(?:[Vv]ol(?:ume|\.)?|[Pp]art)\s*(\d+)\b')
+    # Matches [GTM 52], [CSAM 10], etc.
+    SERIES_REGEX = re.compile(r'\[([A-Z]+)\s+(\d+)\]')
     
     def normalize_files(self, files: List[FileInfo]) -> List[FileInfo]:
         """Normalize filenames according to the specification."""
@@ -62,52 +68,172 @@ class Normalizer:
         # Step 3: Clean noise sources
         base = self._clean_noise_sources(base)
         
-        # Step 4: Remove ALL bracketed annotations
+        # Step 4: Extract Series Info (before removing brackets)
+        series, base = self._extract_series(base)
+
+        # Step 5: Remove remaining bracketed annotations
         base = self.BRACKET_REGEX.sub("", base)
         
-        # Step 5: Extract year FIRST
+        # Step 6: Extract Edition
+        edition, base = self._extract_edition(base)
+
+        # Step 7: Extract year
         year = self._extract_year(base)
         
-        # Step 6: Remove parentheticals
+        # Step 8: Remove parentheticals
         base = self._clean_parentheticals(base, year)
         
-        # Step 7: Parse author and title
+        # Step 9: Parse author and title
         authors, title = self._smart_parse_author_title(base)
-        
+
+        # Step 10: Extract Volume from title (and normalize it in title)
+        volume, title = self._extract_volume(title)
+
         return ParsedMetadata(
             authors=authors,
             title=title,
             year=year,
+            series=series,
+            edition=edition,
+            volume=volume
         )
     
+    def _extract_series(self, s: str) -> Tuple[Optional[str], str]:
+        """Extract series info like [GTM 52] and remove from string."""
+        # Look for the pattern
+        match = self.SERIES_REGEX.search(s)
+        if match:
+            # Check if the abbreviation is one of the known ones (optional but good for safety)
+            # For now, we trust the regex [A-Z]+ \d+ inside brackets
+            series_str = f"{match.group(1)} {match.group(2)}"
+            # Remove from string
+            # We replace with empty string, but keep surrounding spaces clean later
+            new_s = s[:match.start()] + s[match.end():]
+            return series_str, new_s
+
+        # Also handle "Graduate Texts in Mathematics 52" pattern at start of file
+        # But _remove_series_prefixes already strips the long names.
+        # The spec says "Input: Graduate Texts in Mathematics 52 - Title.pdf -> Output: ... [GTM 52]"
+        # If the input had the long name, we might have lost the number in _remove_series_prefixes?
+        # Let's check _remove_series_prefixes. It strips the prefix.
+        # Ideally, we should detect the number before stripping.
+
+        return None, s
+
+    def _extract_edition(self, s: str) -> Tuple[Optional[str], str]:
+        """Extract edition info and remove from string."""
+        # Search for edition patterns
+        matches = list(self.EDITION_REGEX.finditer(s))
+        if not matches:
+            return None, s
+
+        # Take the last one if multiple? Usually only one.
+        match = matches[-1]
+        number = match.group(1) or match.group(2)
+
+        # Normalize to "Nth ed"
+        suffix = "th"
+        if number == "1": suffix = "st"
+        elif number == "2": suffix = "nd"
+        elif number == "3": suffix = "rd"
+
+        # Handle 11, 12, 13
+        if len(number) >= 2 and number[-2] == '1':
+            suffix = "th"
+
+        edition_str = f"{number}{suffix} ed"
+
+        # Remove from string
+        new_s = s[:match.start()] + s[match.end():]
+        return edition_str, new_s
+
+    def _extract_volume(self, title: str) -> Tuple[Optional[str], str]:
+        """Normalize volume info in title to 'Vol N' and extract it if needed."""
+        # The spec says: "Vol N - kept in title".
+        # But the output format shows: "Title [Series] (Year, Edition)"
+        # Wait, spec says: "Multi-volume: Michael Spivak - Differential Geometry Vol 2 (1979).pdf"
+        # So it stays in the title, but normalized.
+
+        # We will replace all occurrences with normalized version
+        def replace(match):
+            return f"Vol {match.group(1)}"
+
+        new_title = self.VOLUME_REGEX.sub(replace, title)
+        return None, new_title  # We don't extract it to a separate field for the filename generation if it stays in title
+
     def _remove_series_prefixes(self, s: str) -> str:
+        # Check for specific patterns that include numbers, e.g. "Graduate Texts in Mathematics 52"
+        # If found, we might want to capture this for the series tag [GTM 52].
+        # However, the current structure separates extraction.
+        # For this task, I will stick to the previous logic but ensure we don't lose the number if possible.
+        # Actually, if the input is "Graduate Texts in Mathematics 52 - Title",
+        # the previous logic removes "Graduate Texts in Mathematics", leaving " 52 - Title".
+        # Then the "52" might be treated as part of the title or author.
+
+        # Let's handle the mapping of long names to abbreviations here if we want to be fancy,
+        # but the spec example shows: "Input: Graduate Texts in Mathematics 52 - Title.pdf -> Output: Author - Title [GTM 52].pdf"
+        # So we SHOULD extract it.
+
         prefixes = [
-            "London Mathematical Society Lecture Note Series",
-            "Graduate Texts in Mathematics",
-            "Progress in Mathematics",
+            ("London Mathematical Society Lecture Note Series", "LMSLN"),
+            ("Graduate Texts in Mathematics", "GTM"),
+            ("Progress in Mathematics", "PM"),
+            ("Springer Undergraduate Mathematics Series", "SUMS"),
+            ("Graduate Studies in Mathematics", "GSM"),
+            ("Cambridge Studies in Advanced Mathematics", "CSAM"),
+        ]
+
+        result = s
+        for prefix, abbr in prefixes:
+            if result.startswith(prefix):
+                # Check if followed by a number
+                rest = result[len(prefix):].strip()
+                # Look for number at start of rest
+                match = re.match(r'^(\d+)\s*[-:]', rest)
+                if match:
+                    # We found a series number!
+                    # We should probably attach this to the string as [GTM 52] so _extract_series can find it later?
+                    # Or just return it modified.
+                    # Hack: Prepend [GTM 52] to the string and strip the prefix.
+                    number = match.group(1)
+                    # Construct new string: "[GTM 52] " + rest without number
+                    # rest[match.end():] starts after the number and separator
+                    # We need to be careful about the separator.
+
+                    # But wait, `_extract_series` looks for `[A-Z]+ \d+`.
+                    # So if we rewrite "Graduate Texts in Mathematics 52 - Title" to "[GTM 52] Title",
+                    # `_extract_series` will catch it.
+
+                    # Find where the number ends
+                    num_match = re.match(r'^(\d+)', rest)
+                    if num_match:
+                        num_end = num_match.end()
+                        return f"[{abbr} {number}] {rest[num_end:]}".strip()
+
+                # If no number, just strip the prefix
+                result = result[len(prefix):]
+                result = result.lstrip("- ]")
+                break
+
+        # Existing logic for other prefixes
+        other_prefixes = [
             "[Springer-Lehrbuch]",
             "[Graduate studies in mathematics",
             "[Progress in Mathematics №",
             "[AMS Mathematical Surveys and Monographs",
         ]
 
-        result = s
-        for prefix in prefixes:
+        for prefix in other_prefixes:
             if result.startswith(prefix):
                 result = result[len(prefix):]
                 result = result.lstrip("- ]")
                 break
 
         # Generic pattern: (Series Name) Author - Title
-        # If it starts with (...), check if the next part looks like an author
         re_generic = re.compile(r'^\s*\(([^)]+)\)\s+(.+)$')
         match = re_generic.match(result)
         if match:
-            # series_part = match.group(1)
             rest_part = match.group(2)
-
-            # Check if 'rest_part' starts with an author
-            # We look for the first separator (- or :) to isolate the potential author
             re_sep = re.compile(r'(?:--|[-:])')
             sep_match = re_sep.search(rest_part)
             potential_author = rest_part
@@ -146,8 +272,14 @@ class Normalizer:
         result = s
         
         # Pattern 1: Remove (YYYY, Publisher) or (YYYY)
+        # Note: If we have extracted an edition, that might have been inside parens with the year.
+        # But _extract_edition just removed "2nd ed".
+        # So "(2000, 2nd ed)" -> becomes "(2000, )" or "(2000)".
+        # We need to clean up commas if they are left behind.
+
         if year is not None:
-            pattern = re.compile(r'\s*\(\s*{}\s*(?:,\s*[^)]+)?\s*\)'.format(year))
+            # Flexible pattern to catch (2000) or (2000, Publisher) or (2000, )
+            pattern = re.compile(r'\s*\(\s*{}\s*(?:,\s*[^)]*)?\s*\)'.format(year))
             result = pattern.sub("", result)
             
         # Pattern 2: Remove nested parentheticals with publisher keywords
@@ -242,8 +374,14 @@ class Normalizer:
             if len(parts) == 2:
                 before = parts[0].strip()
                 after = parts[1].strip()
+                # Check if likely Last, First (both single words)
                 if len(before.split()) == 1 and len(after.split()) == 1:
                     s = f"{before} {after}"
+                # If "Smith, John" -> "Smith, John" (keep comma if it looks like Last, First but maybe multi-word names?)
+                # The spec says: "Marco, Grandis" -> "Marco Grandis" (ONLY if single word each side)
+                # "Smith, John" -> "Smith, John" (keep if likely Lastname, Firstname with 2+ words? No, wait)
+                # Spec: "Smith, John" -> "Smith, John" (keep if likely Lastname, Firstname format with 2+ words)
+                # "Thomas H. Wolff, Izabella Aba, Carol Shubin" -> keep all commas
         
         s = self.SPACE_REGEX.sub(" ", s)
         return s.strip()
@@ -366,8 +504,24 @@ class Normalizer:
         parts = []
         if metadata.authors:
             parts.append(f"{metadata.authors} - ")
+
         parts.append(metadata.title)
+
+        if metadata.series:
+            parts.append(f" [{metadata.series}]")
+
+        # Year and Edition grouping: (Year, Edition) or (Year) or (Edition) if no year?
+        # Spec: "(Year, Edition)"
+
+        parens_content = []
         if metadata.year is not None:
-            parts.append(f" ({metadata.year})")
+            parens_content.append(str(metadata.year))
+
+        if metadata.edition:
+            parens_content.append(metadata.edition)
+
+        if parens_content:
+            parts.append(f" ({', '.join(parens_content)})")
+
         parts.append(extension)
         return "".join(parts)

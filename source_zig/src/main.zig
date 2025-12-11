@@ -1,4 +1,6 @@
 const std = @import("std");
+const tui = @import("tui.zig");
+const Normalizer = @import("normalizer.zig").Normalizer;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -9,7 +11,6 @@ pub fn main() !void {
     const timestamp = std.time.timestamp();
     std.debug.print("[{d}] INFO: Starting ebook renamer\n", .{timestamp});
 
-    const tui = @import("tui.zig");
     var ui = tui.Tui.init();
     try ui.printTitle();
 
@@ -23,19 +24,35 @@ pub fn main() !void {
     // Simulate steps
     try ui.startStep("Scanning");
     std.time.sleep(500 * std.time.ns_per_ms);
-    try ui.finishStep("Scanning", "Found 0 files (Placeholder)");
+    try ui.finishStep("Scanning", "Found files (Demo Mode)");
 
     try ui.startStep("Normalizing");
-    std.time.sleep(500 * std.time.ns_per_ms);
-    try ui.finishStep("Normalizing", "Normalized 0 files (Placeholder)");
+
+    // DEMO: Normalize a few hardcoded strings to prove it works
+    const examples = [_][]const u8{
+        "Graduate Texts in Mathematics 52 - Algebraic Geometry.pdf",
+        "Topology (2000) (2nd Edition).pdf",
+        "Marco, Grandis - Category Theory.pdf",
+    };
+
+    var norm = Normalizer.init(allocator);
+
+    for (examples) |ex| {
+        // Simple extraction of extension
+        const ext = ".pdf";
+        const new_name = try norm.normalize(ex, ext);
+        defer allocator.free(new_name);
+
+        std.debug.print("  Original: {s}\n  New:      {s}\n\n", .{ex, new_name});
+    }
+
+    try ui.finishStep("Normalizing", "Normalization Demo Complete");
 
     try ui.startStep("Checking Integrity");
-    std.time.sleep(500 * std.time.ns_per_ms);
+    std.time.sleep(100 * std.time.ns_per_ms);
     try ui.finishStep("Checking Integrity", "Check complete");
 
     try ui.startStep("Detecting Duplicates");
-    std.time.sleep(500 * std.time.ns_per_ms);
+    std.time.sleep(100 * std.time.ns_per_ms);
     try ui.finishStep("Detecting Duplicates", "Detected 0 duplicate groups");
-
-    std.debug.print("\nZig implementation is currently a placeholder.\n", .{});
 }

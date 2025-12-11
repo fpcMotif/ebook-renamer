@@ -40,6 +40,9 @@ class ParsedMetadata:
     authors: Optional[str]
     title: str
     year: Optional[int]
+    series: Optional[str] = None
+    edition: Optional[str] = None
+    volume: Optional[str] = None
 
 
 @dataclass

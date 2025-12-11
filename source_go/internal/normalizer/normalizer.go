@@ -30,6 +30,12 @@ var (
 	// Cleaning patterns
 	authNoiseRegex    = regexp.MustCompile(`\s*\((?:[Aa]uth\.?|[Aa]uthor|[Ee]ds?\.?|[Tt]ranslator)\)`)
 	trailingAuthRegex = regexp.MustCompile(`\s*\([Aa]uth\.?\)`)
+
+	// New patterns
+	// Go RE2 doesn't support backreferences or lookaheads, but these are simple enough
+	editionRegex = regexp.MustCompile(`\b(\d+)(?:st|nd|rd|th)?\s*[Ee]d(?:ition)?\.?\b|\b[Ee]d(?:ition)?\.?\s*(\d+)\b`)
+	volumeRegex  = regexp.MustCompile(`\b(?:[Vv]ol(?:ume|\.)?|[Pp]art)\s*(\d+)\b`)
+	seriesRegex  = regexp.MustCompile(`\[([A-Z]+)\s+(\d+)\]`)
 )
 
 // NormalizeFiles normalizes filenames according to the specification
@@ -50,14 +56,6 @@ func NormalizeFiles(files []*types.FileInfo) ([]*types.FileInfo, error) {
 
 		newName := generateNewFilename(metadata, file.Extension)
 
-		// Update file info
-		// We need to create a copy or modify the pointer if it's mutable.
-		// Since we are returning a new slice of pointers, we can just modify the struct if we own it,
-		// or create a new one. FileInfo is a struct pointer in the input slice?
-		// The input is []*types.FileInfo.
-		// Let's modify it in place or create a copy.
-		// Rust implementation modifies in place.
-
 		file.NewName = &newName
 		file.NewPath = filepathJoin(filepath.Dir(file.OriginalPath), newName)
 		result[i] = file
@@ -77,52 +75,174 @@ func parseFilename(filename, extension string) (types.ParsedMetadata, error) {
 	// Step 2: Remove series prefixes (must be early)
 	base = removeSeriesPrefixes(base)
 
-	// Step 3: Remove ALL bracketed annotations
-	base = bracketRegex.ReplaceAllString(base, "")
-
-	// Step 4: Clean noise sources (Z-Library, etc.)
+	// Step 3: Clean noise sources
 	// MUST happen BEFORE author parsing
 	base = cleanNoiseSources(base)
 
-	// Step 5: Remove duplicate markers: -2, -3, (1), (2)
+	// Step 4: Extract Series Info (before removing brackets)
+	var series *string
+	series, base = extractSeries(base)
+
+	// Step 5: Remove ALL bracketed annotations
+	base = bracketRegex.ReplaceAllString(base, "")
+
+	// Step 6: Extract Edition
+	var edition *string
+	edition, base = extractEdition(base)
+
+	// Step 7: Remove duplicate markers: -2, -3, (1), (2)
 	base = removeDuplicateMarkers(base)
 
-	// Step 6: Extract year FIRST
+	// Step 8: Extract year FIRST
 	year := extractYear(base)
 
-	// Step 7: Remove parentheticals
+	// Step 9: Remove parentheticals
 	base = cleanParentheticals(base, year)
 
-	// Step 8: Parse author and title
+	// Step 10: Parse author and title
 	authors, title := smartParseAuthorTitle(base)
+
+	// Step 11: Extract Volume from title (and normalize it in title)
+	var volume *string
+	volume, title = extractVolume(title)
 
 	return types.ParsedMetadata{
 		Authors: authors,
 		Title:   title,
 		Year:    year,
+		Series:  series,
+		Edition: edition,
+		Volume:  volume,
 	}, nil
 }
 
+func extractSeries(s string) (*string, string) {
+	matches := seriesRegex.FindStringSubmatch(s)
+	if matches != nil {
+		seriesStr := fmt.Sprintf("%s %s", matches[1], matches[2])
+		// Remove from string
+		// We replace with empty string
+		newS := seriesRegex.ReplaceAllString(s, "")
+		return &seriesStr, newS
+	}
+	return nil, s
+}
+
+func extractEdition(s string) (*string, string) {
+	matches := editionRegex.FindAllStringSubmatchIndex(s, -1)
+	if len(matches) == 0 {
+		return nil, s
+	}
+
+	// Use last match
+	lastMatchIdx := matches[len(matches)-1]
+	start, end := lastMatchIdx[0], lastMatchIdx[1]
+
+	// Groups are at index 2,3 and 4,5
+	var number string
+	if lastMatchIdx[2] != -1 {
+		number = s[lastMatchIdx[2]:lastMatchIdx[3]]
+	} else if lastMatchIdx[4] != -1 {
+		number = s[lastMatchIdx[4]:lastMatchIdx[5]]
+	}
+
+	if number == "" {
+		return nil, s
+	}
+
+	suffix := "th"
+	switch number {
+	case "1":
+		suffix = "st"
+	case "2":
+		suffix = "nd"
+	case "3":
+		suffix = "rd"
+	}
+
+	// Handle 11, 12, 13
+	if len(number) >= 2 && number[len(number)-2] == '1' {
+		suffix = "th"
+	}
+
+	editionStr := fmt.Sprintf("%s%s ed", number, suffix)
+
+	// Remove from string (carefully, by index)
+	newS := s[:start] + s[end:]
+	return &editionStr, newS
+}
+
+func extractVolume(title string) (*string, string) {
+	// Normalize volume info in title to 'Vol N'
+	newTitle := volumeRegex.ReplaceAllStringFunc(title, func(match string) string {
+		submatches := volumeRegex.FindStringSubmatch(match)
+		if len(submatches) > 1 {
+			return fmt.Sprintf("Vol %s", submatches[1])
+		}
+		return match
+	})
+
+	// We return nil for the 'volume' metadata field because it stays in the title
+	return nil, newTitle
+}
+
 func removeSeriesPrefixes(s string) string {
-	prefixes := []string{
-		"London Mathematical Society Lecture Note Series",
-		"Graduate Texts in Mathematics",
-		"Progress in Mathematics",
-		"[Springer-Lehrbuch]",
-		"[Graduate studies in mathematics",
-		"[Progress in Mathematics №",
-		"[AMS Mathematical Surveys and Monographs",
+	prefixes := []struct {
+		Full string
+		Abbr string
+	}{
+		{"London Mathematical Society Lecture Note Series", "LMSLN"},
+		{"Graduate Texts in Mathematics", "GTM"},
+		{"Progress in Mathematics", "PM"},
+		{"Springer Undergraduate Mathematics Series", "SUMS"},
+		{"Graduate Studies in Mathematics", "GSM"},
+		{"Cambridge Studies in Advanced Mathematics", "CSAM"},
 	}
 
 	result := s
-	for _, prefix := range prefixes {
-		if strings.HasPrefix(result, prefix) {
-			result = result[len(prefix):]
+
+	for _, p := range prefixes {
+		if strings.HasPrefix(result, p.Full) {
+			rest := strings.TrimSpace(result[len(p.Full):])
+			// Check if followed by a number
+			// Match number at start
+			reNum := regexp.MustCompile(`^(\d+)\s*[-:]`)
+			if matches := reNum.FindStringSubmatch(rest); matches != nil {
+				number := matches[1]
+				// Prepend [GTM 52] to the REST (after the number/separator)
+				// Find where the match ends
+				loc := reNum.FindStringIndex(rest)
+				endOfMatch := loc[1]
+
+				result = fmt.Sprintf("[%s %s] %s", p.Abbr, number, rest[endOfMatch:])
+				return strings.TrimSpace(result)
+			}
+
+			// If no number, just strip
+			result = result[len(p.Full):]
 			result = strings.TrimLeft(result, "- ]")
-			break
+			goto CheckGeneric
 		}
 	}
 
+	// Other prefixes
+	{
+		otherPrefixes := []string{
+			"[Springer-Lehrbuch]",
+			"[Graduate studies in mathematics",
+			"[Progress in Mathematics №",
+			"[AMS Mathematical Surveys and Monographs",
+		}
+		for _, prefix := range otherPrefixes {
+			if strings.HasPrefix(result, prefix) {
+				result = result[len(prefix):]
+				result = strings.TrimLeft(result, "- ]")
+				break
+			}
+		}
+	}
+
+CheckGeneric:
 	// Generic pattern: (Series Name) Author - Title
 	// If it starts with (...), check if the next part looks like an author
 	reGeneric := regexp.MustCompile(`^\s*\(([^)]+)\)\s+(.+)$`)
@@ -220,7 +340,8 @@ func cleanParentheticals(s string, year *uint16) string {
 	// Pattern 1: Remove (YYYY, Publisher) or (YYYY)
 	if year != nil {
 		y := *year
-		pattern := fmt.Sprintf(`\s*\(\s*%d\s*(?:,\s*[^)]+)?\s*\)`, y)
+		// We use a regex that is tolerant of extra chars like commas because edition might have been removed
+		pattern := fmt.Sprintf(`\s*\(\s*%d\s*(?:,\s*[^)]*)?\s*\)`, y)
 		re := regexp.MustCompile(pattern)
 		result = re.ReplaceAllString(result, "")
 	}
@@ -547,9 +668,27 @@ func generateNewFilename(metadata types.ParsedMetadata, extension string) string
 		result.WriteString(" - ")
 	}
 	result.WriteString(metadata.Title)
-	if metadata.Year != nil {
-		result.WriteString(fmt.Sprintf(" (%d)", *metadata.Year))
+
+	if metadata.Series != nil {
+		result.WriteString(" [")
+		result.WriteString(*metadata.Series)
+		result.WriteString("]")
 	}
+
+	var parens []string
+	if metadata.Year != nil {
+		parens = append(parens, fmt.Sprintf("%d", *metadata.Year))
+	}
+	if metadata.Edition != nil {
+		parens = append(parens, *metadata.Edition)
+	}
+
+	if len(parens) > 0 {
+		result.WriteString(" (")
+		result.WriteString(strings.Join(parens, ", "))
+		result.WriteString(")")
+	}
+
 	result.WriteString(extension)
 	return result.String()
 }

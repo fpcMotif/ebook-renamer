@@ -22,6 +22,9 @@ type ParsedMetadata struct {
 	Authors *string `json:"authors,omitempty"`
 	Title   string  `json:"title"`
 	Year    *uint16 `json:"year,omitempty"`
+	Series  *string `json:"series,omitempty"`
+	Edition *string `json:"edition,omitempty"`
+	Volume  *string `json:"volume,omitempty"`
 }
 
 // RenameOperation represents a file rename operation

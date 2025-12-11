@@ -56,83 +56,206 @@ class Normalizer:
             base = base[:-len(extension)]
         base = base.strip()
         
-        # Step 2: Remove series prefixes (must be early)
-        base = self._remove_series_prefixes(base)
+        # Step 2: Extract series information (before removal)
+        series_info, base = self._extract_series_info(base)
         
-        # Step 3: Clean noise sources
-        base = self._clean_noise_sources(base)
-        
-        # Step 4: Remove ALL bracketed annotations
+        # Step 3: Remove ALL bracketed annotations [Lecture notes], [masters thesis], etc.
+        # BUT preserve series info that was already extracted
         base = self.BRACKET_REGEX.sub("", base)
         
-        # Step 5: Extract year FIRST
+        # Step 4: Clean noise sources (Z-Library, libgen, Anna's Archive, hashes)
+        base = self._clean_noise_sources(base)
+        
+        # Step 5: Remove duplicate markers: -2, -3, (1), (2), etc.
+        base = self._remove_duplicate_markers(base)
+        
+        # Step 6: Extract edition information
+        edition_info, base = self._extract_edition(base)
+        
+        # Step 7: Extract year
         year = self._extract_year(base)
         
-        # Step 6: Remove parentheticals
+        # Step 8: Remove parentheticals with year/publisher info
         base = self._clean_parentheticals(base, year)
         
-        # Step 7: Parse author and title
+        # Step 9: Extract volume information from title
+        volume_info, base = self._extract_volume(base)
+        
+        # Step 10: Parse author and title
         authors, title = self._smart_parse_author_title(base)
         
         return ParsedMetadata(
             authors=authors,
             title=title,
             year=year,
+            series=series_info,
+            edition=edition_info,
+            volume=volume_info,
         )
     
-    def _remove_series_prefixes(self, s: str) -> str:
-        prefixes = [
-            "London Mathematical Society Lecture Note Series",
-            "Graduate Texts in Mathematics",
-            "Progress in Mathematics",
-            "[Springer-Lehrbuch]",
-            "[Graduate studies in mathematics",
-            "[Progress in Mathematics №",
-            "[AMS Mathematical Surveys and Monographs",
+    def _extract_series_info(self, s: str) -> tuple[Optional[str], str]:
+        """Extract series information and return (series_info, remaining_string)."""
+        # Series abbreviation mappings
+        series_mappings = [
+            ("Graduate Texts in Mathematics", "GTM"),
+            ("Cambridge Studies in Advanced Mathematics", "CSAM"),
+            ("London Mathematical Society Lecture Note Series", "LMSLN"),
+            ("Progress in Mathematics", "PM"),
+            ("Springer Undergraduate Mathematics Series", "SUMS"),
+            ("Graduate Studies in Mathematics", "GSM"),
+            ("AMS Mathematical Surveys and Monographs", "AMS-MSM"),
+            ("Oxford Graduate Texts in Mathematics", "OGTM"),
+            ("Springer Monographs in Mathematics", "SMM"),
         ]
 
         result = s
-        for prefix in prefixes:
-            if result.startswith(prefix):
-                result = result[len(prefix):]
-                result = result.lstrip("- ]")
-                break
+        series_info = None
 
-        # Generic pattern: (Series Name) Author - Title
-        # If it starts with (...), check if the next part looks like an author
-        re_generic = re.compile(r'^\s*\(([^)]+)\)\s+(.+)$')
-        match = re_generic.match(result)
+        # Pattern 1: "Series Name Volume - Author - Title"
+        for full_name, abbr in series_mappings:
+            pattern = rf"^{re.escape(full_name)}\s+(\d+)\s*[-\s]"
+            match = re.search(pattern, result)
+            if match:
+                vol = match.group(1)
+                series_info = f"{abbr} {vol}"
+                result = re.sub(pattern, "", result)
+                return series_info, result.strip()
+
+        # Pattern 2: "Series Name - Author - Title" (no volume number)
+        # Remove series name but don't set series_info
+        for full_name, _ in series_mappings:
+            pattern = rf"^{re.escape(full_name)}\s*-\s*"
+            if re.match(pattern, result):
+                result = re.sub(pattern, "", result)
+                return None, result.strip()
+
+        # Pattern 3: "(Series Name Volume) Author - Title"
+        re_paren_series = re.compile(r'^\s*\(([^)]+?)\s+(\d+)\)\s*')
+        match = re_paren_series.match(result)
         if match:
-            # series_part = match.group(1)
-            rest_part = match.group(2)
+            series_part = match.group(1)
+            volume_part = match.group(2)
 
-            # Check if 'rest_part' starts with an author
-            # We look for the first separator (- or :) to isolate the potential author
-            re_sep = re.compile(r'(?:--|[-:])')
-            sep_match = re_sep.search(rest_part)
-            potential_author = rest_part
-            if sep_match:
-                potential_author = rest_part[:sep_match.start()]
+            # Check if series_part matches known series
+            for full_name, abbr in series_mappings:
+                if full_name.lower() in series_part.lower():
+                    series_info = f"{abbr} {volume_part}"
+                    result = re_paren_series.sub("", result)
+                    return series_info, result.strip()
 
-            if self._is_likely_author(potential_author):
-                result = rest_part
+        # Pattern 4: "[Series Name Volume]" in brackets
+        re_bracket_series = re.compile(r'\s*\[([^\]]+?)\s+(\d+)\]')
+        match = re_bracket_series.search(result)
+        if match:
+            series_part = match.group(1)
+            volume_part = match.group(2)
 
-        return result.strip()
+            for full_name, abbr in series_mappings:
+                if full_name.lower() in series_part.lower():
+                    series_info = f"{abbr} {volume_part}"
+                    result = re_bracket_series.sub("", result)
+                    return series_info, result.strip()
+
+        return None, result.strip()
+
+    def _extract_edition(self, s: str) -> tuple[Optional[str], str]:
+        """Extract edition information and return (edition_info, remaining_string)."""
+        # Patterns: "2nd Edition", "Second Edition", "2nd ed.", "2nd ed", etc.
+        edition_patterns = [
+            r'(\d+)(?:st|nd|rd|th)\s+[Ee]dition',
+            r'(\d+)(?:st|nd|rd|th)\s+[Ee]d\.?',
+            r'[Ee]dition\s+(\d+)',
+        ]
+
+        result = s
+
+        for pattern in edition_patterns:
+            match = re.search(pattern, result)
+            if match:
+                num_str = match.group(1)
+                suffix = {"1": "st", "2": "nd", "3": "rd"}.get(num_str, "th")
+                edition_info = f"{num_str}{suffix} ed"
+                result = re.sub(pattern, "", result)
+                return edition_info, result.strip()
+
+        return None, result.strip()
+
+    def _extract_volume(self, s: str) -> tuple[Optional[str], str]:
+        """Extract volume information and return (volume_info, normalized_string)."""
+        # Patterns: "Vol 2", "Volume 2", "Vol. 2", "Part 2"
+        volume_patterns = [
+            (r'\bVol\.?\s+(\d+)\b', True),   # Already normalized
+            (r'\bVolume\s+(\d+)\b', False),  # Needs normalization
+            (r'\bPart\s+(\d+)\b', False),    # Needs normalization
+        ]
+
+        for pattern, already_normalized in volume_patterns:
+            match = re.search(pattern, s)
+            if match:
+                num_str = match.group(1)
+                volume_info = f"Vol {num_str}"
+                if not already_normalized:
+                    # Replace "Volume N" or "Part N" with "Vol N"
+                    normalized_text = re.sub(pattern, volume_info, s)
+                else:
+                    normalized_text = s
+                return volume_info, normalized_text
+
+        return None, s
+
+    def _remove_duplicate_markers(self, s: str) -> str:
+        """Remove duplicate markers: -2, -3, (1), (2), etc."""
+        # (1), (2) at end
+        s = re.sub(r'[-\s]*\(\d{1,2}\)\s*$', '', s)
+        
+        # -2, -3 at end
+        s = re.sub(r'-\d{1,2}\s*$', '', s)
+        
+        # -2 before (year)
+        s = re.sub(r'-\d{1,2}\s+\(', ' (', s)
+        
+        return s
 
     def _clean_noise_sources(self, s: str) -> str:
         patterns = [
-            r'\s*[-\(]?\s*[zZ]-?Library(?:\.pdf)?\s*[)\.]?',
-            r'\s*[-\(]?\s*libgen(?:\.li)?(?:\.pdf)?\s*[)\.]?',
-            r'\s*[-\(]?\s*Anna\'?s?\s+Archive(?:\.pdf)?\s*[)\.]?',
-            # Hash patterns
+            # Z-Library variants
+            r'\s*[-\(]?\s*[zZ]-?Library\s*[)\.]?',
+            r'\s*\([zZ]-?Library\)',
+            r'\s*-\s*[zZ]-?Library',
+            # libgen variants
+            r'\s*[-\(]?\s*libgen(?:\.li)?\s*[)\.]?',
+            r'\s*\(libgen(?:\.li)?\)',
+            r'\s*-\s*libgen(?:\.li)?',
+            # Anna's Archive variants (including stuck to other words)
+            r"Anna'?s?\s*Archive",  # Catches "Anna's Archive" or "AnnasArchive" or "AnnaArchive"
+            r'\s*[-\(]?\s*Anna\'?s?\s+Archive\s*[)\.]?',
+            r'\s*\(Anna\'?s?\s+Archive\)',
+            r'\s*-\s*Anna\'?s?\s+Archive',
+            # Hash patterns (32 hex chars - MD5/SHA hashes)
             r'\s*--\s*[a-f0-9]{32}\s*(?:--)?',
+            # ISBN-like patterns (10-13 digits)
             r'\s*--\s*\d{10,13}\s*(?:--)?',
+            # Long alphanumeric IDs (16+ chars)
             r'\s*--\s*[A-Za-z0-9]{16,}\s*(?:--)?',
+            # Shorter hash patterns (8+ hex chars)
             r'\s*--\s*[a-f0-9]{8,}\s*(?:--)?',
+            # "Uploaded by"
+            r'\s*[-\(]?\s*[Uu]ploaded by\s+[^)\-]+[)\.]?',
+            r'\s*-\s*[Uu]ploaded by\s+[^)\-]+',
+            # "Via ..."
+            r'\s*[-\(]?\s*[Vv]ia\s+[^)\-]+[)\.]?',
+            # Website URLs
+            r'\s*[-\(]?\s*w{3}\.[a-zA-Z0-9-]+\.[a-z]{2,}\s*[)\.]?',
+            r'\s*[-\(]?\s*[a-zA-Z0-9-]+\.(?:com|org|net|edu|io)\s*[)\.]?',
         ]
         result = s
-        for pattern in patterns:
-            result = re.sub(pattern, "", result)
+        # Apply patterns multiple times to handle consecutive patterns
+        for _ in range(3):
+            before = result
+            for pattern in patterns:
+                result = re.sub(pattern, "", result)
+            if result == before:
+                break
         return result.strip()
 
     def _extract_year(self, s: str) -> Optional[int]:
@@ -250,6 +373,12 @@ class Normalizer:
 
     def _clean_title(self, s: str) -> str:
         s = s.strip()
+        
+        # Remove .pdf suffix if it's stuck to the title (from noise sources)
+        s = s.removesuffix(".pdf")
+        s = s.removesuffix(".epub")
+        s = s.removesuffix(".txt")
+        
         s = self._clean_noise_sources(s)
         s = self.AUTH_REGEX.sub("", s)
         s = self.TRAILING_ID_REGEX.sub("", s)
@@ -364,10 +493,25 @@ class Normalizer:
 
     def _generate_new_filename(self, metadata: ParsedMetadata, extension: str) -> str:
         parts = []
+        
+        # Author(s)
         if metadata.authors:
             parts.append(f"{metadata.authors} - ")
+        
+        # Title (volume is kept in title if present)
         parts.append(metadata.title)
-        if metadata.year is not None:
+        
+        # Series info in brackets
+        if metadata.series:
+            parts.append(f" [{metadata.series}]")
+        
+        # Year and Edition in parentheses
+        if metadata.year is not None and metadata.edition is not None:
+            parts.append(f" ({metadata.year}, {metadata.edition})")
+        elif metadata.year is not None:
             parts.append(f" ({metadata.year})")
+        elif metadata.edition is not None:
+            parts.append(f" ({metadata.edition})")
+        
         parts.append(extension)
         return "".join(parts)

@@ -74,102 +74,236 @@ func parseFilename(filename, extension string) (types.ParsedMetadata, error) {
 	base = strings.TrimSuffix(base, extension)
 	base = strings.TrimSpace(base)
 
-	// Step 2: Remove series prefixes (must be early)
-	base = removeSeriesPrefixes(base)
+	// Step 2: Extract series information (before removal)
+	seriesInfo, base := extractSeriesInfo(base)
 
-	// Step 3: Remove ALL bracketed annotations
+	// Step 3: Remove ALL bracketed annotations [Lecture notes], [masters thesis], etc.
+	// BUT preserve series info that was already extracted
 	base = bracketRegex.ReplaceAllString(base, "")
 
-	// Step 4: Clean noise sources (Z-Library, etc.)
-	// MUST happen BEFORE author parsing
+	// Step 4: Clean noise sources (Z-Library, libgen, Anna's Archive, hashes)
 	base = cleanNoiseSources(base)
 
-	// Step 5: Remove duplicate markers: -2, -3, (1), (2)
+	// Step 5: Remove duplicate markers: -2, -3, (1), (2), etc.
 	base = removeDuplicateMarkers(base)
 
-	// Step 6: Extract year FIRST
+	// Step 6: Extract edition information
+	editionInfo, base := extractEdition(base)
+
+	// Step 7: Extract year
 	year := extractYear(base)
 
-	// Step 7: Remove parentheticals
+	// Step 8: Remove parentheticals with year/publisher info
 	base = cleanParentheticals(base, year)
 
-	// Step 8: Parse author and title
+	// Step 9: Extract volume information from title
+	volumeInfo, base := extractVolume(base)
+
+	// Step 10: Parse author and title
 	authors, title := smartParseAuthorTitle(base)
 
 	return types.ParsedMetadata{
 		Authors: authors,
 		Title:   title,
 		Year:    year,
+		Series:  seriesInfo,
+		Edition: editionInfo,
+		Volume:  volumeInfo,
 	}, nil
 }
 
-func removeSeriesPrefixes(s string) string {
-	prefixes := []string{
-		"London Mathematical Society Lecture Note Series",
-		"Graduate Texts in Mathematics",
-		"Progress in Mathematics",
-		"[Springer-Lehrbuch]",
-		"[Graduate studies in mathematics",
-		"[Progress in Mathematics №",
-		"[AMS Mathematical Surveys and Monographs",
+// extractSeriesInfo extracts series information and returns (series_info, remaining_string)
+func extractSeriesInfo(s string) (*string, string) {
+	// Series abbreviation mappings
+	seriesMappings := []struct {
+		fullName string
+		abbr     string
+	}{
+		{"Graduate Texts in Mathematics", "GTM"},
+		{"Cambridge Studies in Advanced Mathematics", "CSAM"},
+		{"London Mathematical Society Lecture Note Series", "LMSLN"},
+		{"Progress in Mathematics", "PM"},
+		{"Springer Undergraduate Mathematics Series", "SUMS"},
+		{"Graduate Studies in Mathematics", "GSM"},
+		{"AMS Mathematical Surveys and Monographs", "AMS-MSM"},
+		{"Oxford Graduate Texts in Mathematics", "OGTM"},
+		{"Springer Monographs in Mathematics", "SMM"},
 	}
 
 	result := s
-	for _, prefix := range prefixes {
-		if strings.HasPrefix(result, prefix) {
-			result = result[len(prefix):]
-			result = strings.TrimLeft(result, "- ]")
-			break
+	var seriesInfo *string
+
+	// Pattern 1: "Series Name Volume - Author - Title"
+	for _, mapping := range seriesMappings {
+		pattern := fmt.Sprintf(`^%s\s+(\d+)\s*[-\s]`, regexp.QuoteMeta(mapping.fullName))
+		re := regexp.MustCompile(pattern)
+		if matches := re.FindStringSubmatch(result); matches != nil {
+			if len(matches) > 1 {
+				vol := matches[1]
+				seriesStr := fmt.Sprintf("%s %s", mapping.abbr, vol)
+				seriesInfo = &seriesStr
+				result = re.ReplaceAllString(result, "")
+				return seriesInfo, strings.TrimSpace(result)
+			}
 		}
 	}
 
-	// Generic pattern: (Series Name) Author - Title
-	// If it starts with (...), check if the next part looks like an author
-	reGeneric := regexp.MustCompile(`^\s*\(([^)]+)\)\s+(.+)$`)
-	if matches := reGeneric.FindStringSubmatch(result); matches != nil {
-		// seriesPart := matches[1]
-		restPart := matches[2]
-
-		// Check if 'restPart' starts with an author
-		// We look for the first separator (- or :) to isolate the potential author
-		reSep := regexp.MustCompile(`(?:--|[-:])`)
-		potentialAuthor := restPart
-		if mat := reSep.FindStringIndex(restPart); mat != nil {
-			potentialAuthor = restPart[:mat[0]]
-		}
-
-		if isLikelyAuthor(potentialAuthor) {
-			result = restPart
+	// Pattern 2: "Series Name - Author - Title" (no volume number)
+	// Remove series name but don't set seriesInfo
+	for _, mapping := range seriesMappings {
+		pattern := fmt.Sprintf(`^%s\s*-\s*`, regexp.QuoteMeta(mapping.fullName))
+		re := regexp.MustCompile(pattern)
+		if re.MatchString(result) {
+			result = re.ReplaceAllString(result, "")
+			return nil, strings.TrimSpace(result)
 		}
 	}
 
-	return strings.TrimSpace(result)
+	// Pattern 3: "(Series Name Volume) Author - Title"
+	reParenSeries := regexp.MustCompile(`^\s*\(([^)]+?)\s+(\d+)\)\s*`)
+	if matches := reParenSeries.FindStringSubmatch(result); matches != nil {
+		if len(matches) >= 3 {
+			seriesPart := matches[1]
+			volumePart := matches[2]
+
+			// Check if seriesPart matches known series
+			for _, mapping := range seriesMappings {
+				if strings.Contains(strings.ToLower(seriesPart), strings.ToLower(mapping.fullName)) {
+					seriesStr := fmt.Sprintf("%s %s", mapping.abbr, volumePart)
+					seriesInfo = &seriesStr
+					result = reParenSeries.ReplaceAllString(result, "")
+					return seriesInfo, strings.TrimSpace(result)
+				}
+			}
+		}
+	}
+
+	// Pattern 4: "[Series Name Volume]" in brackets
+	reBracketSeries := regexp.MustCompile(`\s*\[([^\]]+?)\s+(\d+)\]`)
+	if matches := reBracketSeries.FindStringSubmatch(result); matches != nil {
+		if len(matches) >= 3 {
+			seriesPart := matches[1]
+			volumePart := matches[2]
+
+			for _, mapping := range seriesMappings {
+				if strings.Contains(strings.ToLower(seriesPart), strings.ToLower(mapping.fullName)) {
+					seriesStr := fmt.Sprintf("%s %s", mapping.abbr, volumePart)
+					seriesInfo = &seriesStr
+					result = reBracketSeries.ReplaceAllString(result, "")
+					return seriesInfo, strings.TrimSpace(result)
+				}
+			}
+		}
+	}
+
+	return nil, strings.TrimSpace(result)
+}
+
+// extractEdition extracts edition information and returns (edition_info, remaining_string)
+func extractEdition(s string) (*string, string) {
+	// Patterns: "2nd Edition", "Second Edition", "2nd ed.", "2nd ed", etc.
+	editionPatterns := []string{
+		`(\d+)(?:st|nd|rd|th)\s+[Ee]dition`,
+		`(\d+)(?:st|nd|rd|th)\s+[Ee]d\.?`,
+		`[Ee]dition\s+(\d+)`,
+	}
+
+	result := s
+
+	for _, pattern := range editionPatterns {
+		re := regexp.MustCompile(pattern)
+		if matches := re.FindStringSubmatch(result); matches != nil {
+			if len(matches) > 1 {
+				numStr := matches[1]
+				var suffix string
+				switch numStr {
+				case "1":
+					suffix = "st"
+				case "2":
+					suffix = "nd"
+				case "3":
+					suffix = "rd"
+				default:
+					suffix = "th"
+				}
+				editionStr := fmt.Sprintf("%s%s ed", numStr, suffix)
+				result = re.ReplaceAllString(result, "")
+				return &editionStr, strings.TrimSpace(result)
+			}
+		}
+	}
+
+	return nil, strings.TrimSpace(result)
+}
+
+// extractVolume extracts volume information and returns (volume_info, normalized_string)
+func extractVolume(s string) (*string, string) {
+	// Patterns: "Vol 2", "Volume 2", "Vol. 2", "Part 2"
+	volumePatterns := []struct {
+		pattern           string
+		alreadyNormalized bool
+	}{
+		{`\bVol\.?\s+(\d+)\b`, true},  // Already normalized
+		{`\bVolume\s+(\d+)\b`, false},  // Needs normalization
+		{`\bPart\s+(\d+)\b`, false},   // Needs normalization
+	}
+
+	for _, vp := range volumePatterns {
+		re := regexp.MustCompile(vp.pattern)
+		if matches := re.FindStringSubmatch(s); matches != nil {
+			if len(matches) > 1 {
+				numStr := matches[1]
+				volumeStr := fmt.Sprintf("Vol %s", numStr)
+				var normalizedText string
+				if !vp.alreadyNormalized {
+					// Replace "Volume N" or "Part N" with "Vol N"
+					normalizedText = re.ReplaceAllString(s, volumeStr)
+				} else {
+					normalizedText = s
+				}
+				return &volumeStr, normalizedText
+			}
+		}
+	}
+
+	return nil, s
 }
 
 func cleanNoiseSources(s string) string {
 	patterns := []string{
 		// Z-Library variants
-		`\s*[-\(]?\s*[zZ]-?Library(?:\.pdf)?\s*[)\.]?`,
-		`\s*\([zZ]-?Library(?:\.pdf)?\)`,
-		`\s*-\s*[zZ]-?Library(?:\.pdf)?`,
+		`\s*[-\(]?\s*[zZ]-?Library\s*[)\.]?`,
+		`\s*\([zZ]-?Library\)`,
+		`\s*-\s*[zZ]-?Library`,
 		// libgen variants
-		`\s*[-\(]?\s*libgen(?:\.li)?(?:\.pdf)?\s*[)\.]?`,
-		`\s*\(libgen(?:\.li)?(?:\.pdf)?\)`,
-		`\s*-\s*libgen(?:\.li)?(?:\.pdf)?`,
-		// Anna's Archive variants
-		`Anna'?s?\s*Archive`,
+		`\s*[-\(]?\s*libgen(?:\.li)?\s*[)\.]?`,
+		`\s*\(libgen(?:\.li)?\)`,
+		`\s*-\s*libgen(?:\.li)?`,
+		// Anna's Archive variants (including stuck to other words)
+		`Anna'?s?\s*Archive`, // Catches "Anna's Archive" or "AnnasArchive" or "AnnaArchive"
 		`\s*[-\(]?\s*Anna'?s?\s+Archive\s*[)\.]?`,
 		`\s*\(Anna'?s?\s+Archive\)`,
 		`\s*-\s*Anna'?s?\s+Archive`,
-		// Hash patterns
+		// Hash patterns (32 hex chars - MD5/SHA hashes)
 		`\s*--\s*[a-f0-9]{32}\s*(?:--)?`,
+		// ISBN-like patterns (10-13 digits)
 		`\s*--\s*\d{10,13}\s*(?:--)?`,
+		// Long alphanumeric IDs (16+ chars)
 		`\s*--\s*[A-Za-z0-9]{16,}\s*(?:--)?`,
+		// Shorter hash patterns (8+ hex chars)
 		`\s*--\s*[a-f0-9]{8,}\s*(?:--)?`,
+		// "Uploaded by"
+		`\s*[-\(]?\s*[Uu]ploaded by\s+[^)\-]+[)\.]?`,
+		`\s*-\s*[Uu]ploaded by\s+[^)\-]+`,
+		// "Via ..."
+		`\s*[-\(]?\s*[Vv]ia\s+[^)\-]+[)\.]?`,
+		// Website URLs
+		`\s*[-\(]?\s*w{3}\.[a-zA-Z0-9-]+\.[a-z]{2,}\s*[)\.]?`,
+		`\s*[-\(]?\s*[a-zA-Z0-9-]+\.(?:com|org|net|edu|io)\s*[)\.]?`,
 	}
 
 	result := s
-	// Apply patterns multiple times
+	// Apply patterns multiple times to handle consecutive patterns
 	for i := 0; i < 3; i++ {
 		before := result
 		for _, p := range patterns {
@@ -180,6 +314,7 @@ func cleanNoiseSources(s string) string {
 			break
 		}
 	}
+
 	return strings.TrimSpace(result)
 }
 
@@ -383,6 +518,11 @@ func cleanAuthorName(s string) string {
 func cleanTitle(s string) string {
 	s = strings.TrimSpace(s)
 
+	// Remove .pdf suffix if it's stuck to the title (from noise sources)
+	s = strings.TrimSuffix(s, ".pdf")
+	s = strings.TrimSuffix(s, ".epub")
+	s = strings.TrimSuffix(s, ".txt")
+
 	// Clean noise sources first
 	s = cleanNoiseSources(s)
 
@@ -542,14 +682,30 @@ func cleanOrphanedBrackets(s string) string {
 
 func generateNewFilename(metadata types.ParsedMetadata, extension string) string {
 	var result strings.Builder
+
+	// Author(s)
 	if metadata.Authors != nil {
 		result.WriteString(*metadata.Authors)
 		result.WriteString(" - ")
 	}
+
+	// Title (volume is kept in title if present)
 	result.WriteString(metadata.Title)
-	if metadata.Year != nil {
-		result.WriteString(fmt.Sprintf(" (%d)", *metadata.Year))
+
+	// Series info in brackets
+	if metadata.Series != nil {
+		result.WriteString(fmt.Sprintf(" [%s]", *metadata.Series))
 	}
+
+	// Year and Edition in parentheses
+	if metadata.Year != nil && metadata.Edition != nil {
+		result.WriteString(fmt.Sprintf(" (%d, %s)", *metadata.Year, *metadata.Edition))
+	} else if metadata.Year != nil {
+		result.WriteString(fmt.Sprintf(" (%d)", *metadata.Year))
+	} else if metadata.Edition != nil {
+		result.WriteString(fmt.Sprintf(" (%s)", *metadata.Edition))
+	}
+
 	result.WriteString(extension)
 	return result.String()
 }

@@ -101,12 +101,13 @@ func TestCleanTitleComprehensiveSources(t *testing.T) {
 		{"Title libgen.li.pdf", "Title"},
 		{"Title Z-Library.pdf", "Title"},
 		{"Title", "Title"},
-		{"Title (auth.)", "Title"},
-		{"Title with  double  spaces", "Title with double spaces"},
-		{"Title -", "Title"},
-		{"Title :", "Title"},
-		{"Title ;", "Title"},
-	}
+{"Title (auth.)", "Title"},
+{"Title with  double  spaces", "Title with double spaces"},
+{"Title -", "Title"},
+{"Title :", "Title"},
+{"Title ;", "Title"},
+{"Book - Cambridge - MIT Press", "Book - Cambridge"},
+}
 
 	for _, tc := range testCases {
 		result := cleanTitle(tc.input)

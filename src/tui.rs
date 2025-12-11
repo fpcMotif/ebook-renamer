@@ -175,10 +175,25 @@ fn run_process(mut args: Args, tx: mpsc::Sender<AppEvent>) -> Result<()> {
 
     // 4. Todo / Check
     let mut todo_list = todo::TodoList::new(&args.todo_file, &args.path)?;
-    // ... (Simplified logic for TUI demo, ideally copy full logic)
+    let mut files_to_delete = Vec::new();
+
     for file_info in &normalized {
-        if !file_info.is_failed_download && !file_info.is_too_small {
-             todo_list.analyze_file_integrity(file_info)?;
+        // Add existing failed/too small files
+        if file_info.is_failed_download || file_info.is_too_small {
+            if args.delete_small {
+                files_to_delete.push(file_info.original_path.clone());
+                // Remove this file from todo list since we're deleting it
+                todo_list.remove_file_from_todo(&file_info.original_name);
+            } else if args.clean_failed {
+                // Log AND Delete
+                todo_list.add_failed_download(file_info)?;
+                files_to_delete.push(file_info.original_path.clone());
+            } else {
+                todo_list.add_failed_download(file_info)?;
+            }
+        } else {
+            // Analyze file integrity for all other files
+            todo_list.analyze_file_integrity(file_info)?;
         }
     }
     tx.send(AppEvent::CheckComplete)?;
@@ -205,6 +220,13 @@ fn run_process(mut args: Args, tx: mpsc::Sender<AppEvent>) -> Result<()> {
                         }
                     }
                 }
+            }
+        }
+
+        // Delete small/corrupted/failed files if requested
+        if (args.delete_small || args.clean_failed) && !files_to_delete.is_empty() {
+            for path in &files_to_delete {
+                std::fs::remove_file(path)?;
             }
         }
     }

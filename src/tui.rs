@@ -184,7 +184,9 @@ fn run_process(mut args: Args, tx: mpsc::Sender<AppEvent>) -> Result<()> {
     tx.send(AppEvent::CheckComplete)?;
 
     // 5. Duplicates
-    let (duplicate_groups, clean_files) = duplicates::detect_duplicates(normalized, args.skip_cloud_hash)?;
+    let (duplicate_groups, clean_files, _hash_errors) = duplicates::detect_duplicates(normalized, args.skip_cloud_hash)?;
+    // We could report hash_errors in the TUI logs, but for now we just ignore them in the TUI view
+    // (they will be in todo.md when written)
     tx.send(AppEvent::DuplicatesComplete(duplicate_groups.clone()))?;
 
     // 6. Execute

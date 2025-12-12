@@ -129,7 +129,22 @@ fn main() -> Result<()> {
     }
 
     // Detect duplicates (skip if cloud storage mode)
-    let (duplicate_groups, clean_files) = duplicates::detect_duplicates(normalized, args.skip_cloud_hash)?;
+    let (duplicate_groups, clean_files, hash_errors) = duplicates::detect_duplicates(normalized, args.skip_cloud_hash)?;
+
+    // Process hash errors
+    if !hash_errors.is_empty() {
+        info!("Found {} files with hash computation errors", hash_errors.len());
+        for (file_info, error) in &hash_errors {
+            todo_list.add_file_issue(file_info, todo::FileIssue::ReadError(error.clone()))?;
+            // Add to todo_items for JSON output
+            todo_items.push((
+                "read_error".to_string(),
+                file_info.original_name.clone(),
+                format!("Check file permission: {} (Read error: {})", file_info.original_name, error)
+            ));
+        }
+    }
+
     if args.skip_cloud_hash {
         info!("Skipped duplicate detection (cloud storage mode)");
     } else {

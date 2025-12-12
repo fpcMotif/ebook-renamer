@@ -211,15 +211,21 @@ func (m Model) checkIntegrityCmd() tea.Msg {
 	var corruptedFiles []*types.FileInfo
 	var smallFiles []*types.FileInfo
 
+	// Track files that have been identified as problematic to avoid re-checking them
+	processedFiles := make(map[string]bool)
+
 	for _, fileInfo := range m.normalized {
 		if fileInfo.IsFailedDownload {
 			incompleteDownloads = append(incompleteDownloads, fileInfo)
+			processedFiles[fileInfo.OriginalPath] = true
 		} else if fileInfo.IsTooSmall {
 			smallFiles = append(smallFiles, fileInfo)
+			processedFiles[fileInfo.OriginalPath] = true
 		} else {
 			if strings.ToLower(fileInfo.Extension) == ".pdf" {
 				if err := validatePDFHeader(fileInfo.OriginalPath); err != nil {
 					corruptedFiles = append(corruptedFiles, fileInfo)
+					processedFiles[fileInfo.OriginalPath] = true
 				}
 			}
 		}
@@ -260,10 +266,8 @@ func (m Model) checkIntegrityCmd() tea.Msg {
 
 	// Analyze others
 	for _, fileInfo := range m.normalized {
-		isProblematic := false
 		// Check if in any problematic list
-		// (Simplified check for now)
-		if !isProblematic {
+		if !processedFiles[fileInfo.OriginalPath] {
 			todoList.AnalyzeFileIntegrity(fileInfo)
 		}
 	}

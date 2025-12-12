@@ -9,12 +9,21 @@ module EbookRenamer
     BRACKET_REGEX = /\s*\[[^\]]*\]/
     TRAILING_ID_REGEX = /[-_][A-Za-z0-9]{8,}$/
     SIMPLE_PAREN_REGEX = /\([^)]+\)/
-    # Ruby supports recursive regexes! (\((?>[^()]+|\g<0>)*\))
-    # But for simple nesting like ( ... ( ... ) ... ) we can use loop or recursive pattern
     NESTED_PAREN_REGEX = /\([^()]*(?:\([^()]*\)[^()]*)*\)/
     TRAILING_AUTHOR_REGEX = /^(.+?)\s*\(([^)]+)\)\s*$/
     SEPARATOR_REGEX = /^(.+?)\s*[-:]\s+(.+)$/
     MULTI_AUTHOR_REGEX = /^([A-Z][^:]+?),\s*([A-Z][^:]+?)\s*[-:]\s+(.+)$/
+
+    # Series patterns
+    SERIES_REGEX = /\[([A-Z]+)\s+(\d+)\]/
+
+    # Edition patterns
+    EDITION_REGEX = /(\d+)(?:st|nd|rd|th)?\s*[Ee]d(?:ition)?/
+    EDITION_KEYWORD_REGEX = /(?:Second|Third|Fourth|Fifth|Sixth|Seventh|Eighth|Ninth|Tenth)\s*[Ee]d(?:ition)?/
+
+    # Volume patterns
+    VOLUME_REGEX = /\b[Vv]ol(?:ume|\.)?\s*(\d+)\b/
+    PART_REGEX = /\b[Pp]art\s*(\d+)\b/
 
     SOURCE_INDICATORS = [
       / - libgen\.li$/, / - libgen$/, / - Z-Library$/, / - z-Library$/,
@@ -35,6 +44,13 @@ module EbookRenamer
       "Textbook", "Edition", "Vol.", "Volume", "No.", "Part", "理工", "出版社", "の"
     ]
 
+    STRICT_PUBLISHER_KEYWORDS = [
+      "Press", "Publishing", "Springer", "Cambridge", "Oxford", "MIT",
+      "Wiley", "Elsevier", "Routledge", "Pearson", "McGraw", "Addison",
+      "Prentice", "O'Reilly", "Princeton", "Harvard", "Yale", "Stanford",
+      "Chicago", "California", "Columbia", "University", "Verlag", "Birkhäuser", "CUP"
+    ]
+
     def normalize_files(files)
       files.map do |file|
         next file if file.is_failed_download || file.is_too_small
@@ -50,30 +66,157 @@ module EbookRenamer
 
     def parse_filename(filename, extension)
       # Step 1: Remove extension
-      base = filename
+      base = filename.dup
       base = base.chomp('.download')
       base = base.chomp(extension)
       base = base.strip
 
-      # Step 2: Remove series prefixes (must be early)
+      # Step 2: Extract series information (before removal)
+      series_info, base = extract_series(base)
+
+      # Step 3: Remove series prefixes (legacy)
       base = remove_series_prefixes(base)
 
-      # Step 3: Clean noise sources
-      base = clean_noise_sources(base)
-
-      # Step 4: Remove ALL bracketed annotations
+      # Step 4: Remove ALL bracketed annotations (except what we extracted)
+      # Note: If we extracted series from [], they are gone from base.
+      # Now remove remaining [].
       base = base.gsub(BRACKET_REGEX, '')
 
-      # Step 5: Extract year FIRST
+      # Step 5: Clean noise sources
+      base = clean_noise_sources(base)
+
+      # Step 6: Extract edition information
+      edition_info, base = extract_edition(base)
+
+      # Step 7: Extract year FIRST (find last occurrence)
       year = extract_year(base)
 
-      # Step 6: Remove parentheticals
+      # Step 8: Remove parentheticals
       base = clean_parentheticals(base, year)
 
-      # Step 7: Parse author and title
+      # Step 9: Extract volume information
+      # Note: We extract volume here and will inject it back into title if needed,
+      # or handle it separately. The spec says "Vol N - kept in title".
+      # But to normalize it (Volume 2 -> Vol 2), we might want to extract and reinject.
+      # Let's try to normalize it in place or extract it.
+      # If we extract it, we can append it to title later.
+      volume_info, base = extract_volume(base)
+
+      # Step 10: Parse author and title
       authors, title = smart_parse_author_title(base)
 
-      ParsedMetadata.new(authors: authors, title: title, year: year)
+      # Re-inject volume into title if present
+      if volume_info
+        title = "#{title} #{volume_info}"
+      end
+
+      ParsedMetadata.new(
+        authors: authors,
+        title: title,
+        year: year,
+        series: series_info,
+        volume: volume_info, # kept in title usually, but stored here for reference
+        edition: edition_info
+      )
+    end
+
+    def extract_series(s)
+      # Look for [ABBR NUM] patterns
+      # If found, return it and remove from string
+      # Currently we just handle known patterns or generic [Word Num]
+
+      # For now, let's look for known series patterns if needed,
+      # or just generic [A-Z+ \d+]
+
+      match = s.match(SERIES_REGEX)
+      if match
+        series_str = match[0] # [GTM 52]
+        remaining = s.gsub(match[0], '').strip
+        # Return format without brackets for storage? Or with?
+        # Spec says output: [Series Volume]
+        # Let's store "GTM 52" (content)
+        return ["#{match[1]} #{match[2]}", remaining]
+      end
+
+      # Also check for Series Name in text if we want to convert to abbr,
+      # but spec implies existing brackets mostly.
+      # "Graduate Texts in Mathematics 52" -> "GTM 52"
+
+      series_map = {
+        "Graduate Texts in Mathematics" => "GTM",
+        "Cambridge Studies in Advanced Mathematics" => "CSAM",
+        "London Mathematical Society Lecture Note Series" => "LMSLN",
+        "Progress in Mathematics" => "PM",
+        "Springer Undergraduate Mathematics Series" => "SUMS",
+        "Graduate Studies in Mathematics" => "GSM"
+      }
+
+      series_map.each do |name, abbr|
+        pattern = /#{Regexp.escape(name)}\s+(\d+)/
+        if m = s.match(pattern)
+          return ["#{abbr} #{m[1]}", s.gsub(m[0], '').strip]
+        end
+      end
+
+      [nil, s]
+    end
+
+    def extract_edition(s)
+      # Look for "Nth ed" or "Nth Edition"
+      match = s.match(EDITION_REGEX)
+      if match
+        n = match[1]
+        suffix = case n
+                 when '1' then 'st'
+                 when '2' then 'nd'
+                 when '3' then 'rd'
+                 else 'th'
+                 end
+        # Fix 11th, 12th, 13th
+        suffix = 'th' if ['11','12','13'].include?(n)
+
+        return ["#{n}#{suffix} ed", s.gsub(match[0], '').strip]
+      end
+
+      # Word based edition
+      match = s.match(EDITION_KEYWORD_REGEX)
+      if match
+        word = match[0].split.first
+        n = case word
+            when 'Second' then '2nd'
+            when 'Third' then '3rd'
+            when 'Fourth' then '4th'
+            when 'Fifth' then '5th'
+            when 'Sixth' then '6th'
+            when 'Seventh' then '7th'
+            when 'Eighth' then '8th'
+            when 'Ninth' then '9th'
+            when 'Tenth' then '10th'
+            else nil
+            end
+        if n
+          return ["#{n} ed", s.gsub(match[0], '').strip]
+        end
+      end
+
+      [nil, s]
+    end
+
+    def extract_volume(s)
+      # Normalize Volume 2 -> Vol 2
+      # Part 3 -> Vol 3
+
+      match = s.match(VOLUME_REGEX)
+      if match
+        return ["Vol #{match[1]}", s.gsub(match[0], '').strip]
+      end
+
+      match = s.match(PART_REGEX)
+      if match
+        return ["Vol #{match[1]}", s.gsub(match[0], '').strip]
+      end
+
+      [nil, s]
     end
 
     def remove_series_prefixes(s)
@@ -97,14 +240,9 @@ module EbookRenamer
       end
 
       # Generic pattern: (Series Name) Author - Title
-      # If it starts with (...), check if the next part looks like an author
       generic_match = result.match(/^\s*\(([^)]+)\)\s+(.+)$/)
       if generic_match
-        # series_part = generic_match[1]
         rest_part = generic_match[2]
-
-        # Check if 'rest_part' starts with an author
-        # We look for the first separator (- or :) to isolate the potential author
         sep_match = rest_part.match(/(?:--|[-:])/)
         potential_author = rest_part
         if sep_match
@@ -120,13 +258,14 @@ module EbookRenamer
     end
 
     def clean_noise_sources(s)
-      patterns = [
-        /\s*[-\(]?\s*[zZ]-?Library(?:\.pdf)?\s*[)\.]?/,
-        /\s*[-\(]?\s*libgen(?:\.li)?(?:\.pdf)?\s*[)\.]?/,
-        /\s*[-\(]?\s*Anna'?s?\s+Archive(?:\.pdf)?\s*[)\.]?/
-      ]
       result = s
-      patterns.each { |p| result = result.gsub(p, '') }
+      SOURCE_INDICATORS.each do |ind|
+        if ind.is_a?(Regexp)
+          result = result.gsub(ind, '')
+        else
+          # If it were a string, but we used Regexps in the array
+        end
+      end
       result.strip
     end
 
@@ -209,7 +348,7 @@ module EbookRenamer
 
       # Check if name-like (uppercase Latin OR non-Latin letter)
       has_uppercase = s.match?(/[A-Z]/)
-      has_non_latin = s.match?(/[^\x00-\x7F]/) # Basic check for non-ASCII
+      has_non_latin = s.match?(/[^\x00-\x7F]/)
 
       has_uppercase || has_non_latin
     end
@@ -238,7 +377,6 @@ module EbookRenamer
       s = s.gsub(TRAILING_ID_REGEX, '')
 
       # Remove trailing publisher info separated by dash
-      # e.g. "Title - Publisher"
       if idx = s.rindex(' - ')
         suffix = s[(idx + 3)..-1]
         if is_publisher_or_series_info(suffix)
@@ -250,7 +388,6 @@ module EbookRenamer
       if idx = s.rindex('-')
         if idx > 0 && idx < s.length - 1
           suffix = s[(idx + 1)..-1].strip
-          # Use stricter check for non-spaced dash to avoid stripping parts of title
           if is_strict_publisher_info(suffix)
             s = s[0...idx]
           end
@@ -258,7 +395,7 @@ module EbookRenamer
       end
 
       s = clean_orphaned_brackets(s)
-      s = s.gsub(SPACE_REGEX, ' ')
+      s = s.gsub(SPACE_REGEX, ' ').strip
       s.gsub(/^[-:;,\.]+|[-:;,\.]+$/, '').strip
     end
 
@@ -272,14 +409,7 @@ module EbookRenamer
     end
 
     def is_strict_publisher_info(s)
-      strict_keywords = [
-        "Press", "Publishing", "Springer", "Cambridge", "Oxford", "MIT",
-        "Wiley", "Elsevier", "Routledge", "Pearson", "McGraw", "Addison",
-        "Prentice", "O'Reilly", "Princeton", "Harvard", "Yale", "Stanford",
-        "Chicago", "California", "Columbia", "University", "Verlag", "Birkhäuser", "CUP"
-      ]
-
-      strict_keywords.any? { |k| s.include?(k) }
+      STRICT_PUBLISHER_KEYWORDS.any? { |k| s.include?(k) }
     end
 
     def clean_orphaned_brackets(s)
@@ -312,7 +442,6 @@ module EbookRenamer
         end
       end
 
-      # Remove trailing orphaned opening brackets
       while result.end_with?('(') || result.end_with?('[')
         result = result[0...-1]
       end
@@ -322,12 +451,26 @@ module EbookRenamer
 
     def generate_new_filename(metadata, extension)
       parts = []
+
+      # Author -
       parts << "#{metadata.authors} -" if metadata.authors
+
+      # Title
       parts << metadata.title
-      parts << "(#{metadata.year})" if metadata.year
-      parts << extension
-      parts.join(' ').gsub('  ', ' ').strip.gsub(/ \./, '.')
+
+      # [Series Volume]
+      parts << "[#{metadata.series}]" if metadata.series
+
+      # (Year, Edition)
+      year_edition = []
+      year_edition << metadata.year if metadata.year
+      year_edition << metadata.edition if metadata.edition
+
+      parts << "(#{year_edition.join(', ')})" unless year_edition.empty?
+
+      # Extension
+      name = parts.join(' ').gsub('  ', ' ').strip.gsub(/ \./, '.')
+      name + extension
     end
   end
 end
-

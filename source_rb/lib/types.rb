@@ -15,7 +15,9 @@ module EbookRenamer
     :authors,
     :title,
     :year,
+    :series,
+    :volume,
+    :edition,
     keyword_init: true
   )
 end
-

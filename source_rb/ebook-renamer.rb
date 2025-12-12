@@ -1,40 +1,27 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-require 'logger'
-require 'optparse'
-
-# Setup logging
-$logger = Logger.new($stderr)
-$logger.level = Logger::INFO
-$logger.formatter = proc do |severity, datetime, _progname, msg|
-  "[#{datetime.strftime('%Y-%m-%d %H:%M:%S.%3N')}] #{severity}: #{msg}\n"
-end
+require_relative 'lib/cli'
+require_relative 'lib/scanner'
+require_relative 'lib/renamer'
 
 def main
-  $logger.info('Starting ebook renamer')
+  cli = EbookRenamer::CLI.new
+  path, options = cli.parse(ARGV)
+
+  puts "Ebook Renamer (Ruby)"
+  puts "Mode: #{options[:dry_run] ? 'DRY RUN' : 'LIVE'}"
+  puts "Scanning: #{path}"
   
-  # Parse command line arguments
-  path = ARGV[0] || '.'
+  scanner = EbookRenamer::Scanner.new
+  files = scanner.scan(path, recursive: options[:recursive])
   
-  $logger.info("Processing path: #{path}")
+  puts "Found #{files.size} files."
   
-  # For now, this is a minimal implementation showing the structure
-  # Full implementation would include:
-  # - CLI argument parsing
-  # - File scanning with recursion
-  # - Filename normalization
-  # - Duplicate detection
-  # - Todo list generation
+  renamer = EbookRenamer::Renamer.new(options)
+  renamer.process(files)
   
-  puts 'Ruby implementation - work in progress'
-  puts 'This is a placeholder showing the logging structure'
-  puts 'Full implementation requires:'
-  puts '  - CLI parsing module'
-  puts '  - Scanner module'
-  puts '  - Normalizer module'
-  puts '  - Duplicates module'
-  puts '  - Todo module'
+  puts "Done."
 end
 
 if __FILE__ == $PROGRAM_NAME

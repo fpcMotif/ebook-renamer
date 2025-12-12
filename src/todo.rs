@@ -12,7 +12,7 @@ pub enum FileIssue {
     CorruptedPdf,
     #[allow(dead_code)]
     InvalidExtension,
-    ReadError,
+    ReadError(String),
 }
 
 pub struct TodoList {
@@ -73,10 +73,10 @@ impl TodoList {
                     file_info.original_name, file_info.extension
                 )
             }
-            FileIssue::ReadError => {
+            FileIssue::ReadError(ref msg) => {
                 format!(
-                    "检查文件权限: {} (无法读取文件)",
-                    file_info.original_name
+                    "检查文件权限: {} (无法读取文件: {})",
+                    file_info.original_name, msg
                 )
             }
         };
@@ -87,7 +87,8 @@ impl TodoList {
                 FileIssue::FailedDownload => self.failed_downloads.push(item_clone.clone()),
                 FileIssue::TooSmall => self.small_files.push(item_clone.clone()),
                 FileIssue::CorruptedPdf => self.corrupted_files.push(item_clone.clone()),
-                FileIssue::InvalidExtension | FileIssue::ReadError => self.other_issues.push(item_clone.clone()),
+                FileIssue::InvalidExtension => self.other_issues.push(item_clone.clone()),
+                FileIssue::ReadError(_) => self.other_issues.push(item_clone.clone()),
             }
             self.items.push(item_clone);
             debug!("Added to todo: {}", item);
@@ -121,8 +122,8 @@ impl TodoList {
         }
 
         // Check file readability
-        if let Err(_) = fs::metadata(&file_info.original_path) {
-            self.add_file_issue(file_info, FileIssue::ReadError)?;
+        if let Err(e) = fs::metadata(&file_info.original_path) {
+            self.add_file_issue(file_info, FileIssue::ReadError(e.to_string()))?;
             return Ok(());
         }
 
@@ -488,10 +489,11 @@ Other text
             new_path: tmp_dir.path().join("unreadable.pdf"),
         };
 
-        todo_list.add_file_issue(&file_info, FileIssue::ReadError)?;
+        todo_list.add_file_issue(&file_info, FileIssue::ReadError("Permission denied".to_string()))?;
 
         assert_eq!(todo_list.other_issues.len(), 1);
         assert!(todo_list.other_issues[0].contains("无法读取"));
+        assert!(todo_list.other_issues[0].contains("Permission denied"));
 
         Ok(())
     }

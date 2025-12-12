@@ -1,6 +1,6 @@
 use crate::scanner::FileInfo;
 use anyhow::Result;
-use log::debug;
+use log::{debug, warn};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
@@ -9,7 +9,7 @@ use strsim::jaro_winkler;
 // Allowed formats to keep
 const ALLOWED_EXTENSIONS: &[&str] = &[".pdf", ".epub", ".txt"];
 
-pub fn detect_duplicates(files: Vec<FileInfo>, skip_hash: bool) -> Result<(Vec<Vec<PathBuf>>, Vec<FileInfo>)> {
+pub fn detect_duplicates(files: Vec<FileInfo>, skip_hash: bool) -> Result<(Vec<Vec<PathBuf>>, Vec<FileInfo>, Vec<(FileInfo, String)>)> {
     // Filter to only allowed formats first
     let filtered_files: Vec<FileInfo> = files
         .into_iter()
@@ -21,6 +21,7 @@ pub fn detect_duplicates(files: Vec<FileInfo>, skip_hash: bool) -> Result<(Vec<V
     // Build hash map: key -> list of file infos
     // Key is either MD5 hash or normalized filename depending on skip_hash
     let mut hash_map: HashMap<String, Vec<FileInfo>> = HashMap::new();
+    let mut hash_errors: Vec<(FileInfo, String)> = Vec::new();
 
     if skip_hash {
         debug!("Skipping MD5 hash computation, using fuzzy filename matching + size comparison");
@@ -124,10 +125,8 @@ pub fn detect_duplicates(files: Vec<FileInfo>, skip_hash: bool) -> Result<(Vec<V
                             .push(file_info.clone());
                     },
                     Err(e) => {
-                        debug!("Failed to compute hash for {}: {}", file_info.original_path.display(), e);
-                        // Treat as unique if we can't read it? Or just skip? 
-                        // Skipping might be safer to avoid false negatives, or maybe we should warn.
-                        // For now, let's just log and skip adding to duplicate map (so it stays "clean")
+                        warn!("Failed to compute hash for {}: {}", file_info.original_path.display(), e);
+                        hash_errors.push((file_info.clone(), e.to_string()));
                     }
                 }
             }
@@ -162,9 +161,11 @@ pub fn detect_duplicates(files: Vec<FileInfo>, skip_hash: bool) -> Result<(Vec<V
     let clean_files: Vec<FileInfo> = filtered_files
         .into_iter()
         .filter(|f| !duplicate_paths.contains(&f.original_path))
+        // Also exclude files that failed hash computation so we don't treat them as unique/clean
+        .filter(|f| !hash_errors.iter().any(|(err_f, _)| err_f.original_path == f.original_path))
         .collect();
 
-    Ok((duplicate_groups, clean_files))
+    Ok((duplicate_groups, clean_files, hash_errors))
 }
 
 // Select file to keep based on priority: normalized > shortest path > newest
@@ -321,11 +322,12 @@ mod tests {
             },
         ];
 
-        let (dup_groups, clean_files) = detect_duplicates(files, false)?;
+        let (dup_groups, clean_files, errors) = detect_duplicates(files, false)?;
 
         assert_eq!(dup_groups.len(), 1);
         assert_eq!(dup_groups[0].len(), 2);
         assert_eq!(clean_files.len(), 1); // Only one should remain
+        assert!(errors.is_empty());
 
         Ok(())
     }
@@ -481,7 +483,7 @@ mod tests {
         ];
 
         // Even if files are present, skip_hash=true should return empty duplicate groups
-        let (dup_groups, clean_files) = detect_duplicates(files.clone(), true).unwrap();
+        let (dup_groups, clean_files, _) = detect_duplicates(files.clone(), true).unwrap();
 
         assert!(dup_groups.is_empty());
         assert_eq!(clean_files.len(), 1);
@@ -558,7 +560,7 @@ mod tests {
         let files = vec![f1, f2];
 
         // When skip_hash is true, we expect it to find duplicates based on new_name
-        let (dup_groups, clean_files) = detect_duplicates(files, true).unwrap();
+        let (dup_groups, clean_files, _) = detect_duplicates(files, true).unwrap();
 
         assert_eq!(dup_groups.len(), 1, "Should find 1 duplicate group");
         assert_eq!(dup_groups[0].len(), 2, "Group should have 2 files");
@@ -570,10 +572,11 @@ mod tests {
     #[test]
     fn test_detect_duplicates_empty_list() {
         let files: Vec<FileInfo> = vec![];
-        let (dup_groups, clean_files) = detect_duplicates(files, false).unwrap();
+        let (dup_groups, clean_files, errors) = detect_duplicates(files, false).unwrap();
 
         assert!(dup_groups.is_empty());
         assert!(clean_files.is_empty());
+        assert!(errors.is_empty());
     }
 
     #[test]
@@ -594,7 +597,7 @@ mod tests {
             new_path: file_path,
         }];
 
-        let (dup_groups, clean_files) = detect_duplicates(files, false).unwrap();
+        let (dup_groups, clean_files, _) = detect_duplicates(files, false).unwrap();
 
         // Single file cannot be a duplicate
         assert!(dup_groups.is_empty());
@@ -636,7 +639,7 @@ mod tests {
             },
         ];
 
-        let (dup_groups, clean_files) = detect_duplicates(files, false).unwrap();
+        let (dup_groups, clean_files, _) = detect_duplicates(files, false).unwrap();
 
         // MOBI files should be filtered out entirely
         assert!(dup_groups.is_empty());
@@ -691,7 +694,7 @@ mod tests {
             },
         ];
 
-        let (dup_groups, clean_files) = detect_duplicates(files, false).unwrap();
+        let (dup_groups, clean_files, _) = detect_duplicates(files, false).unwrap();
 
         assert_eq!(dup_groups.len(), 1);
         assert_eq!(dup_groups[0].len(), 3); // All three are duplicates
@@ -734,7 +737,7 @@ mod tests {
             },
         ];
 
-        let (dup_groups, clean_files) = detect_duplicates(files, false).unwrap();
+        let (dup_groups, clean_files, _) = detect_duplicates(files, false).unwrap();
 
         // Same size but different hash = not duplicates
         assert!(dup_groups.is_empty());
@@ -776,7 +779,7 @@ mod tests {
             },
         ];
 
-        let (dup_groups, clean_files) = detect_duplicates(files, false).unwrap();
+        let (dup_groups, clean_files, _) = detect_duplicates(files, false).unwrap();
 
         // Different sizes = cannot be duplicates, no hash computed
         assert!(dup_groups.is_empty());
@@ -818,7 +821,7 @@ mod tests {
             },
         ];
 
-        let (dup_groups, clean_files) = detect_duplicates(files, false).unwrap();
+        let (dup_groups, clean_files, _) = detect_duplicates(files, false).unwrap();
 
         // .download files are filtered out by extension
         assert!(dup_groups.is_empty());
@@ -860,7 +863,7 @@ mod tests {
             },
         ];
 
-        let (dup_groups, clean_files) = detect_duplicates(files, false).unwrap();
+        let (dup_groups, clean_files, _) = detect_duplicates(files, false).unwrap();
 
         // Too small files should be excluded from duplicate detection
         assert!(dup_groups.is_empty());
@@ -972,7 +975,7 @@ mod tests {
             },
         ];
 
-        let (dup_groups, clean_files) = detect_duplicates(files, false).unwrap();
+        let (dup_groups, clean_files, _) = detect_duplicates(files, false).unwrap();
 
         // EPUB should be included
         assert_eq!(dup_groups.len(), 1);
@@ -1014,7 +1017,7 @@ mod tests {
             },
         ];
 
-        let (dup_groups, clean_files) = detect_duplicates(files, false).unwrap();
+        let (dup_groups, clean_files, _) = detect_duplicates(files, false).unwrap();
 
         // TXT should be included
         assert_eq!(dup_groups.len(), 1);
@@ -1085,7 +1088,7 @@ mod tests {
             },
         ];
 
-        let (dup_groups, clean_files) = detect_duplicates(files, false).unwrap();
+        let (dup_groups, clean_files, _) = detect_duplicates(files, false).unwrap();
 
         // Should find 2 groups
         assert_eq!(dup_groups.len(), 2);

@@ -1,7 +1,11 @@
 use crate::scanner::FileInfo;
+use crate::security::shell_escape;
 use anyhow::Result;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::fs;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RenameOperation {
@@ -35,6 +39,170 @@ pub struct OperationsOutput {
     pub duplicate_deletes: Vec<DuplicateGroup>,
     pub small_or_corrupted_deletes: Vec<DeleteOperation>,
     pub todo_items: Vec<TodoItem>,
+}
+
+/// An entry in the undo log for a single executed operation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UndoEntry {
+    /// Type of operation: "rename", "delete_duplicate", "delete_small"
+    pub operation_type: String,
+    /// Original path before the operation
+    pub original_path: String,
+    /// New path after rename (None for deletes)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new_path: Option<String>,
+    /// File size in bytes (for recovery info on deletes)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<u64>,
+    /// MD5 hash if computed (for verification)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub md5_hash: Option<String>,
+    /// Shell command to reverse this operation
+    pub undo_command: String,
+}
+
+/// Complete undo log with metadata and all operations
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UndoLog {
+    /// Schema version for forward compatibility
+    pub version: String,
+    /// Timestamp when operations were executed
+    pub timestamp: String,
+    /// Base directory that was processed
+    pub base_directory: String,
+    /// Whether this was a dry run (should always be false for actual undo logs)
+    pub dry_run: bool,
+    /// Total count of operations
+    pub total_operations: usize,
+    /// All rename operations (reversible)
+    pub renames: Vec<UndoEntry>,
+    /// Deleted duplicates (NOT reversible - files are gone)
+    pub deleted_duplicates: Vec<UndoEntry>,
+    /// Deleted small/corrupted files (NOT reversible - files are gone)
+    pub deleted_small_files: Vec<UndoEntry>,
+}
+
+impl UndoLog {
+    /// Create a new undo log with current timestamp
+    pub fn new(base_directory: &Path, dry_run: bool) -> Self {
+        let now: DateTime<Utc> = Utc::now();
+        Self {
+            version: "1.0".to_string(),
+            timestamp: now.to_rfc3339(),
+            base_directory: base_directory.to_string_lossy().to_string(),
+            dry_run,
+            total_operations: 0,
+            renames: Vec::new(),
+            deleted_duplicates: Vec::new(),
+            deleted_small_files: Vec::new(),
+        }
+    }
+
+    /// Add a rename operation to the log
+    pub fn add_rename(&mut self, from: &Path, to: &Path) {
+        let from_str = from.to_string_lossy().to_string();
+        let to_str = to.to_string_lossy().to_string();
+
+        // Generate undo command (reverse rename)
+        let undo_cmd = format!(
+            "mv {} {}",
+            shell_escape(&to_str),
+            shell_escape(&from_str)
+        );
+
+        self.renames.push(UndoEntry {
+            operation_type: "rename".to_string(),
+            original_path: from_str,
+            new_path: Some(to_str),
+            size_bytes: None,
+            md5_hash: None,
+            undo_command: undo_cmd,
+        });
+        self.total_operations += 1;
+    }
+
+    /// Add a deleted duplicate to the log
+    pub fn add_deleted_duplicate(&mut self, path: &Path, size: u64, hash: Option<String>) {
+        let path_str = path.to_string_lossy().to_string();
+
+        self.deleted_duplicates.push(UndoEntry {
+            operation_type: "delete_duplicate".to_string(),
+            original_path: path_str,
+            new_path: None,
+            size_bytes: Some(size),
+            md5_hash: hash,
+            undo_command: "# File deleted - cannot be undone automatically. Check backups or kept duplicate.".to_string(),
+        });
+        self.total_operations += 1;
+    }
+
+    /// Add a deleted small/corrupted file to the log
+    pub fn add_deleted_small(&mut self, path: &Path, size: u64) {
+        let path_str = path.to_string_lossy().to_string();
+
+        self.deleted_small_files.push(UndoEntry {
+            operation_type: "delete_small".to_string(),
+            original_path: path_str,
+            new_path: None,
+            size_bytes: Some(size),
+            md5_hash: None,
+            undo_command: "# File deleted - cannot be undone automatically. Re-download if needed.".to_string(),
+        });
+        self.total_operations += 1;
+    }
+
+    /// Convert to JSON string
+    pub fn to_json(&self) -> Result<String> {
+        Ok(serde_json::to_string_pretty(self)?)
+    }
+
+    /// Write undo log to file
+    pub fn write_to_file(&self, path: &Path) -> Result<()> {
+        let json = self.to_json()?;
+        let mut file = fs::File::create(path)?;
+        file.write_all(json.as_bytes())?;
+        Ok(())
+    }
+
+    /// Generate a shell script that can undo all rename operations
+    pub fn generate_undo_script(&self) -> String {
+        let mut script = String::new();
+        script.push_str("#!/bin/bash\n");
+        script.push_str("# Undo script generated by ebook-renamer\n");
+        script.push_str(&format!("# Generated: {}\n", self.timestamp));
+        script.push_str(&format!("# Base directory: {}\n\n", self.base_directory));
+
+        script.push_str("set -e  # Exit on any error\n\n");
+
+        if self.renames.is_empty() {
+            script.push_str("echo 'No rename operations to undo.'\n");
+        } else {
+            script.push_str(&format!("echo 'Undoing {} rename operations...'\n\n", self.renames.len()));
+
+            // Reverse order for proper undo
+            for entry in self.renames.iter().rev() {
+                script.push_str(&format!("{}\n", entry.undo_command));
+            }
+
+            script.push_str("\necho 'All rename operations undone successfully.'\n");
+        }
+
+        if !self.deleted_duplicates.is_empty() || !self.deleted_small_files.is_empty() {
+            script.push_str("\n# WARNING: The following files were deleted and cannot be automatically restored:\n");
+            for entry in &self.deleted_duplicates {
+                script.push_str(&format!("# - {} (duplicate, {} bytes)\n",
+                    entry.original_path,
+                    entry.size_bytes.unwrap_or(0)));
+            }
+            for entry in &self.deleted_small_files {
+                script.push_str(&format!("# - {} (small/corrupted, {} bytes)\n",
+                    entry.original_path,
+                    entry.size_bytes.unwrap_or(0)));
+            }
+        }
+
+        script
+    }
 }
 
 impl OperationsOutput {
@@ -652,5 +820,183 @@ mod tests {
         // Verify still sorted
         assert_eq!(output.renames[0].from, "file000.pdf");
         assert_eq!(output.renames[99].from, "file099.pdf");
+    }
+
+    // ========== UNDO LOG TESTS ==========
+
+    #[test]
+    fn test_undo_log_new() {
+        let base_dir = PathBuf::from("/test/path");
+        let log = UndoLog::new(&base_dir, false);
+
+        assert_eq!(log.version, "1.0");
+        assert_eq!(log.base_directory, "/test/path");
+        assert!(!log.dry_run);
+        assert_eq!(log.total_operations, 0);
+        assert!(log.renames.is_empty());
+        assert!(log.deleted_duplicates.is_empty());
+        assert!(log.deleted_small_files.is_empty());
+    }
+
+    #[test]
+    fn test_undo_log_add_rename() {
+        let base_dir = PathBuf::from("/test");
+        let mut log = UndoLog::new(&base_dir, false);
+
+        log.add_rename(
+            Path::new("/test/old name.pdf"),
+            Path::new("/test/new name.pdf"),
+        );
+
+        assert_eq!(log.total_operations, 1);
+        assert_eq!(log.renames.len(), 1);
+        assert_eq!(log.renames[0].operation_type, "rename");
+        assert_eq!(log.renames[0].original_path, "/test/old name.pdf");
+        assert_eq!(log.renames[0].new_path, Some("/test/new name.pdf".to_string()));
+        // Undo command should properly escape paths
+        assert!(log.renames[0].undo_command.contains("mv"));
+        assert!(log.renames[0].undo_command.contains("'"));
+    }
+
+    #[test]
+    fn test_undo_log_add_deleted_duplicate() {
+        let base_dir = PathBuf::from("/test");
+        let mut log = UndoLog::new(&base_dir, false);
+
+        log.add_deleted_duplicate(
+            Path::new("/test/duplicate.pdf"),
+            12345,
+            Some("abc123hash".to_string()),
+        );
+
+        assert_eq!(log.total_operations, 1);
+        assert_eq!(log.deleted_duplicates.len(), 1);
+        assert_eq!(log.deleted_duplicates[0].operation_type, "delete_duplicate");
+        assert_eq!(log.deleted_duplicates[0].original_path, "/test/duplicate.pdf");
+        assert_eq!(log.deleted_duplicates[0].size_bytes, Some(12345));
+        assert_eq!(log.deleted_duplicates[0].md5_hash, Some("abc123hash".to_string()));
+        // Undo command should indicate file cannot be restored
+        assert!(log.deleted_duplicates[0].undo_command.contains("deleted"));
+    }
+
+    #[test]
+    fn test_undo_log_add_deleted_small() {
+        let base_dir = PathBuf::from("/test");
+        let mut log = UndoLog::new(&base_dir, false);
+
+        log.add_deleted_small(Path::new("/test/small.pdf"), 100);
+
+        assert_eq!(log.total_operations, 1);
+        assert_eq!(log.deleted_small_files.len(), 1);
+        assert_eq!(log.deleted_small_files[0].operation_type, "delete_small");
+        assert_eq!(log.deleted_small_files[0].size_bytes, Some(100));
+    }
+
+    #[test]
+    fn test_undo_log_to_json() {
+        let base_dir = PathBuf::from("/test");
+        let mut log = UndoLog::new(&base_dir, false);
+
+        log.add_rename(
+            Path::new("/test/old.pdf"),
+            Path::new("/test/new.pdf"),
+        );
+
+        let json = log.to_json().unwrap();
+
+        assert!(json.contains("\"version\": \"1.0\""));
+        assert!(json.contains("\"base_directory\": \"/test\""));
+        assert!(json.contains("\"total_operations\": 1"));
+        assert!(json.contains("\"renames\":"));
+        assert!(json.contains("\"operation_type\": \"rename\""));
+    }
+
+    #[test]
+    fn test_undo_log_generate_undo_script() {
+        let base_dir = PathBuf::from("/test");
+        let mut log = UndoLog::new(&base_dir, false);
+
+        log.add_rename(
+            Path::new("/test/old.pdf"),
+            Path::new("/test/new.pdf"),
+        );
+        log.add_deleted_duplicate(Path::new("/test/dup.pdf"), 1000, None);
+
+        let script = log.generate_undo_script();
+
+        assert!(script.starts_with("#!/bin/bash"));
+        assert!(script.contains("set -e"));
+        assert!(script.contains("mv"));
+        // Deleted files should be noted as non-recoverable
+        assert!(script.contains("WARNING"));
+        assert!(script.contains("dup.pdf"));
+    }
+
+    #[test]
+    fn test_undo_log_empty_script() {
+        let base_dir = PathBuf::from("/test");
+        let log = UndoLog::new(&base_dir, false);
+
+        let script = log.generate_undo_script();
+
+        assert!(script.contains("No rename operations to undo"));
+    }
+
+    #[test]
+    fn test_undo_log_shell_escape_special_chars() {
+        let base_dir = PathBuf::from("/test");
+        let mut log = UndoLog::new(&base_dir, false);
+
+        // Test with path containing single quotes (the tricky case)
+        log.add_rename(
+            Path::new("/test/Book's Title.pdf"),
+            Path::new("/test/Author - Book's Title.pdf"),
+        );
+
+        let script = log.generate_undo_script();
+
+        // Should properly escape single quotes
+        assert!(script.contains("'\\''"));
+    }
+
+    #[test]
+    fn test_undo_log_write_and_read() {
+        use tempfile::TempDir;
+
+        let tmp_dir = TempDir::new().unwrap();
+        let log_path = tmp_dir.path().join("undo.json");
+        let base_dir = PathBuf::from("/test");
+        let mut log = UndoLog::new(&base_dir, false);
+
+        log.add_rename(
+            Path::new("/test/a.pdf"),
+            Path::new("/test/b.pdf"),
+        );
+
+        log.write_to_file(&log_path).unwrap();
+
+        // Verify file exists and contains valid JSON
+        let content = std::fs::read_to_string(&log_path).unwrap();
+        let parsed: UndoLog = serde_json::from_str(&content).unwrap();
+
+        assert_eq!(parsed.version, "1.0");
+        assert_eq!(parsed.total_operations, 1);
+        assert_eq!(parsed.renames.len(), 1);
+    }
+
+    #[test]
+    fn test_undo_log_multiple_operations() {
+        let base_dir = PathBuf::from("/test");
+        let mut log = UndoLog::new(&base_dir, false);
+
+        log.add_rename(Path::new("/a.pdf"), Path::new("/b.pdf"));
+        log.add_rename(Path::new("/c.pdf"), Path::new("/d.pdf"));
+        log.add_deleted_duplicate(Path::new("/e.pdf"), 100, None);
+        log.add_deleted_small(Path::new("/f.pdf"), 50);
+
+        assert_eq!(log.total_operations, 4);
+        assert_eq!(log.renames.len(), 2);
+        assert_eq!(log.deleted_duplicates.len(), 1);
+        assert_eq!(log.deleted_small_files.len(), 1);
     }
 }

@@ -37,6 +37,41 @@ pub fn is_cloud_storage_path(path: &Path) -> Option<CloudProvider> {
         return Some(CloudProvider::OneDrive);
     }
 
+    // iCloud Drive detection
+    if path_str.contains("iCloud Drive") || path_str.contains("Mobile Documents") {
+        debug!("Detected iCloud Drive path: {}", path_str);
+        return Some(CloudProvider::ICloudDrive);
+    }
+
+    if path_str.contains("Library/Mobile Documents/com~apple~CloudDocs") {
+        debug!("Detected macOS iCloud Drive path: {}", path_str);
+        return Some(CloudProvider::ICloudDrive);
+    }
+
+    // Nextcloud detection
+    if path_str.contains("Nextcloud") {
+        debug!("Detected Nextcloud path: {}", path_str);
+        return Some(CloudProvider::Nextcloud);
+    }
+
+    // MEGA detection
+    if path_str.contains("MEGA") || path_str.contains("MEGAsync") {
+        debug!("Detected MEGA path: {}", path_str);
+        return Some(CloudProvider::Mega);
+    }
+
+    // pCloud detection
+    if path_str.contains("pCloud") || path_str.contains("pCloudDrive") {
+        debug!("Detected pCloud path: {}", path_str);
+        return Some(CloudProvider::PCloud);
+    }
+
+    // Box detection
+    if path_str.contains("/Box/") || path_str.contains("Box Sync") {
+        debug!("Detected Box path: {}", path_str);
+        return Some(CloudProvider::Box);
+    }
+
     None
 }
 
@@ -45,6 +80,11 @@ pub enum CloudProvider {
     Dropbox,
     GoogleDrive,
     OneDrive,
+    ICloudDrive,
+    Nextcloud,
+    Mega,
+    PCloud,
+    Box,
 }
 
 impl CloudProvider {
@@ -53,6 +93,11 @@ impl CloudProvider {
             CloudProvider::Dropbox => "Dropbox",
             CloudProvider::GoogleDrive => "Google Drive",
             CloudProvider::OneDrive => "OneDrive",
+            CloudProvider::ICloudDrive => "iCloud Drive",
+            CloudProvider::Nextcloud => "Nextcloud",
+            CloudProvider::Mega => "MEGA",
+            CloudProvider::PCloud => "pCloud",
+            CloudProvider::Box => "Box",
         }
     }
 }
@@ -99,5 +144,44 @@ mod tests {
     fn test_not_cloud_storage() {
         let path = PathBuf::from("/Users/user/Documents/Books");
         assert_eq!(is_cloud_storage_path(&path), None);
+    }
+
+    #[test]
+    fn test_detect_icloud_drive() {
+        let path = PathBuf::from("/Users/user/Library/Mobile Documents/com~apple~CloudDocs/Books");
+        assert_eq!(is_cloud_storage_path(&path), Some(CloudProvider::ICloudDrive));
+
+        let path2 = PathBuf::from("/Users/user/iCloud Drive/Books");
+        assert_eq!(is_cloud_storage_path(&path2), Some(CloudProvider::ICloudDrive));
+    }
+
+    #[test]
+    fn test_detect_nextcloud() {
+        let path = PathBuf::from("/Users/user/Nextcloud/Books");
+        assert_eq!(is_cloud_storage_path(&path), Some(CloudProvider::Nextcloud));
+    }
+
+    #[test]
+    fn test_detect_mega() {
+        let path = PathBuf::from("/Users/user/MEGA/Books");
+        assert_eq!(is_cloud_storage_path(&path), Some(CloudProvider::Mega));
+
+        let path2 = PathBuf::from("/Users/user/MEGAsync/Books");
+        assert_eq!(is_cloud_storage_path(&path2), Some(CloudProvider::Mega));
+    }
+
+    #[test]
+    fn test_detect_pcloud() {
+        let path = PathBuf::from("/Users/user/pCloud Drive/Books");
+        assert_eq!(is_cloud_storage_path(&path), Some(CloudProvider::PCloud));
+    }
+
+    #[test]
+    fn test_detect_box() {
+        let path = PathBuf::from("/Users/user/Box/Books");
+        assert_eq!(is_cloud_storage_path(&path), Some(CloudProvider::Box));
+
+        let path2 = PathBuf::from("/Users/user/Box Sync/Books");
+        assert_eq!(is_cloud_storage_path(&path2), Some(CloudProvider::Box));
     }
 }

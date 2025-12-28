@@ -7,6 +7,9 @@ mod json_output;
 mod download_recovery;
 mod tui;
 mod cloud;
+mod renamer;
+mod security;
+
 
 use anyhow::Result;
 use clap::Parser;
@@ -129,7 +132,11 @@ fn main() -> Result<()> {
     }
 
     // Detect duplicates (skip if cloud storage mode)
-    let (duplicate_groups, clean_files, hash_errors) = duplicates::detect_duplicates(normalized, args.skip_cloud_hash)?;
+    let (duplicate_groups, mut clean_files, hash_errors) =
+        duplicates::detect_duplicates(normalized, args.skip_cloud_hash)?;
+
+    // Ensure no two files attempt to rename to the same destination (or overwrite an existing file)
+    renamer::resolve_rename_collisions(&mut clean_files)?;
 
     // Process hash errors
     if !hash_errors.is_empty() {
@@ -234,11 +241,16 @@ fn main() -> Result<()> {
             println!("\n{} todo.md written (dry-run mode)", "✓".green().bold());
         }
     } else {
-        // Execute renames
+        // Initialize undo log if requested
+        let mut undo_log = json_output::UndoLog::new(&args.path, false);
+
+        // Execute renames (cycle-safe)
+        renamer::execute_renames(&clean_files)?;
+
+        // Log renames to undo log
         for file_info in &clean_files {
-            if let Some(ref new_name) = file_info.new_name {
-                std::fs::rename(&file_info.original_path, &file_info.new_path)?;
-                info!("Renamed: {} -> {}", file_info.original_name, new_name);
+            if file_info.new_name.is_some() && file_info.original_path != file_info.new_path {
+                undo_log.add_rename(&file_info.original_path, &file_info.new_path);
             }
         }
 
@@ -248,8 +260,11 @@ fn main() -> Result<()> {
                 if group.len() > 1 {
                     for (idx, path) in group.iter().enumerate() {
                         if idx > 0 {
+                            // Get file size before deletion for undo log
+                            let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
                             std::fs::remove_file(path)?;
                             info!("Deleted duplicate: {}", path.display());
+                            undo_log.add_deleted_duplicate(path, size, None);
                         }
                     }
                 }
@@ -263,14 +278,27 @@ fn main() -> Result<()> {
                 files_to_delete.len().to_string().red().bold()
             );
             for path in &files_to_delete {
-                if !args.dry_run {
-                    std::fs::remove_file(path)?;
-                    info!("Deleted small/corrupted/failed file: {}", path.display());
-                    println!("  {} {}",
-                        "Deleted:".red().bold(),
-                        path.display().to_string().bright_black()
-                    );
-                }
+                // Get file size before deletion for undo log
+                let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+                std::fs::remove_file(path)?;
+                info!("Deleted small/corrupted/failed file: {}", path.display());
+                println!("  {} {}",
+                    "Deleted:".red().bold(),
+                    path.display().to_string().bright_black()
+                );
+                undo_log.add_deleted_small(path, size);
+            }
+        }
+
+        // Write undo log if path specified
+        if let Some(ref undo_log_path) = args.undo_log {
+            undo_log.write_to_file(undo_log_path)?;
+            info!("Wrote undo log to {:?}", undo_log_path);
+            if !args.json {
+                println!("{} Undo log written to: {}",
+                    "✓".green().bold(),
+                    undo_log_path.display().to_string().bright_cyan()
+                );
             }
         }
 

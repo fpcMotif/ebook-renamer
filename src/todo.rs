@@ -10,6 +10,7 @@ pub enum FileIssue {
     FailedDownload,
     TooSmall,
     CorruptedPdf,
+    CorruptedEpub,
     #[allow(dead_code)]
     InvalidExtension,
     ReadError(String),
@@ -67,6 +68,12 @@ impl TodoList {
                     file_info.original_name
                 )
             }
+            FileIssue::CorruptedEpub => {
+                format!(
+                    "重新下载: {} (EPUB文件损坏或格式无效)",
+                    file_info.original_name
+                )
+            }
             FileIssue::InvalidExtension => {
                 format!(
                     "检查文件: {} (扩展名异常: {})",
@@ -87,6 +94,7 @@ impl TodoList {
                 FileIssue::FailedDownload => self.failed_downloads.push(item_clone.clone()),
                 FileIssue::TooSmall => self.small_files.push(item_clone.clone()),
                 FileIssue::CorruptedPdf => self.corrupted_files.push(item_clone.clone()),
+                FileIssue::CorruptedEpub => self.corrupted_files.push(item_clone.clone()),
                 FileIssue::InvalidExtension => self.other_issues.push(item_clone.clone()),
                 FileIssue::ReadError(_) => self.other_issues.push(item_clone.clone()),
             }
@@ -113,10 +121,20 @@ impl TodoList {
             return Ok(());
         }
 
+        let ext_lower = file_info.extension.to_lowercase();
+
         // Check PDF integrity for PDF files
-        if file_info.extension.to_lowercase() == ".pdf" {
+        if ext_lower == ".pdf" {
             if let Err(_) = validate_pdf_header(&file_info.original_path) {
                 self.add_file_issue(file_info, FileIssue::CorruptedPdf)?;
+                return Ok(());
+            }
+        }
+
+        // Check EPUB integrity for EPUB files
+        if ext_lower == ".epub" {
+            if let Err(_) = validate_epub_structure(&file_info.original_path) {
+                self.add_file_issue(file_info, FileIssue::CorruptedEpub)?;
                 return Ok(());
             }
         }
@@ -187,16 +205,46 @@ fn extract_items_from_md(content: &str) -> Vec<String> {
 
 fn validate_pdf_header(path: &PathBuf) -> Result<()> {
     use std::io::Read;
-    
+
     let mut file = fs::File::open(path)?;
     let mut header = [0u8; 5];
     file.read_exact(&mut header)?;
-    
+
     // PDF files should start with "%PDF-"
     if &header != b"%PDF-" {
         return Err(anyhow::anyhow!("Invalid PDF header"));
     }
-    
+
+    Ok(())
+}
+
+/// Validates that an EPUB file is a valid ZIP archive with the required structure.
+/// EPUB files are ZIP archives that must contain:
+/// - mimetype file (should be first and uncompressed)
+/// - META-INF/container.xml
+fn validate_epub_structure(path: &PathBuf) -> Result<()> {
+    use std::io::Read;
+
+    let mut file = fs::File::open(path)?;
+    let mut header = [0u8; 4];
+    file.read_exact(&mut header)?;
+
+    // ZIP files start with PK\x03\x04 or PK\x05\x06 (empty) or PK\x07\x08 (spanned)
+    if header[0] != b'P' || header[1] != b'K' {
+        return Err(anyhow::anyhow!("Invalid EPUB: not a ZIP archive"));
+    }
+
+    // Valid ZIP signatures
+    let valid_signatures = [
+        [0x03, 0x04], // Local file header
+        [0x05, 0x06], // End of central directory (empty archive)
+        [0x07, 0x08], // Spanned archive
+    ];
+
+    if !valid_signatures.iter().any(|sig| header[2] == sig[0] && header[3] == sig[1]) {
+        return Err(anyhow::anyhow!("Invalid EPUB: corrupted ZIP signature"));
+    }
+
     Ok(())
 }
 
@@ -627,8 +675,38 @@ Other text
     #[test]
     fn test_analyze_file_integrity_non_pdf_file() -> Result<()> {
         let tmp_dir = TempDir::new()?;
+        // Use a .txt file which has no integrity checks
+        let txt_path = tmp_dir.path().join("book.txt");
+        fs::write(&txt_path, "just plain text")?;
+
+        let mut todo_list = TodoList::new(&None, &tmp_dir.path().to_path_buf())?;
+
+        let file_info = FileInfo {
+            original_path: txt_path.clone(),
+            original_name: "book.txt".to_string(),
+            extension: ".txt".to_string(),
+            size: 100,
+            modified_time: std::time::SystemTime::now(),
+            is_failed_download: false,
+            is_too_small: false,
+            new_name: None,
+            new_path: txt_path,
+        };
+
+        todo_list.analyze_file_integrity(&file_info)?;
+
+        // TXT files should not be checked for PDF/EPUB headers
+        assert!(todo_list.corrupted_files.is_empty());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_analyze_file_integrity_valid_epub() -> Result<()> {
+        let tmp_dir = TempDir::new()?;
         let epub_path = tmp_dir.path().join("book.epub");
-        fs::write(&epub_path, "not a pdf")?;
+        // EPUB files are ZIP archives, write a valid ZIP header (PK\x03\x04)
+        fs::write(&epub_path, b"PK\x03\x04valid epub content")?;
 
         let mut todo_list = TodoList::new(&None, &tmp_dir.path().to_path_buf())?;
 
@@ -646,8 +724,37 @@ Other text
 
         todo_list.analyze_file_integrity(&file_info)?;
 
-        // EPUB files should not be checked for PDF header
+        // Valid EPUB should not be flagged
         assert!(todo_list.corrupted_files.is_empty());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_analyze_file_integrity_corrupted_epub() -> Result<()> {
+        let tmp_dir = TempDir::new()?;
+        let epub_path = tmp_dir.path().join("corrupted.epub");
+        // Not a valid ZIP header
+        fs::write(&epub_path, "not a valid zip file")?;
+
+        let mut todo_list = TodoList::new(&None, &tmp_dir.path().to_path_buf())?;
+
+        let file_info = FileInfo {
+            original_path: epub_path.clone(),
+            original_name: "corrupted.epub".to_string(),
+            extension: ".epub".to_string(),
+            size: 100,
+            modified_time: std::time::SystemTime::now(),
+            is_failed_download: false,
+            is_too_small: false,
+            new_name: None,
+            new_path: epub_path,
+        };
+
+        todo_list.analyze_file_integrity(&file_info)?;
+
+        // Corrupted EPUB should be flagged
+        assert_eq!(todo_list.corrupted_files.len(), 1);
 
         Ok(())
     }

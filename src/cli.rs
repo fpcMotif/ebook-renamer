@@ -123,6 +123,14 @@ pub struct Args {
         help = "Automatically remove empty .download/.crdownload folders after extracting PDFs"
     )]
     pub cleanup_downloads: bool,
+
+    /// Path for undo log JSON file (only written when operations are executed, not in dry-run mode)
+    #[arg(
+        long,
+        value_name = "PATH",
+        help = "Write JSON undo log to specified path (enables reverting rename operations)"
+    )]
+    pub undo_log: Option<PathBuf>,
 }
 
 impl Args {
@@ -165,6 +173,7 @@ mod tests {
             json: false,
             skip_cloud_hash: false,
             cleanup_downloads: false,
+            undo_log: None,
         };
 
         let exts = args.get_extensions();
@@ -193,6 +202,7 @@ mod tests {
             json: false,
             skip_cloud_hash: false,
             cleanup_downloads: false,
+            undo_log: None,
         };
 
         let exts = args.get_extensions();
@@ -220,6 +230,7 @@ mod tests {
             json: false,
             skip_cloud_hash: false,
             cleanup_downloads: false,
+            undo_log: None,
         };
 
         let exts = args.get_extensions();

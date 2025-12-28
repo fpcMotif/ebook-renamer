@@ -11,15 +11,20 @@ from .types import FileInfo
 
 class DuplicateDetector:
     """Handles duplicate detection based on MD5 hash."""
-    
-    # Allowed formats to keep
+
+    # Allowed formats to keep (lowercase for case-insensitive comparison)
     ALLOWED_EXTENSIONS = {".pdf", ".epub", ".txt"}
-    
+
+    @classmethod
+    def is_allowed_extension(cls, ext: str) -> bool:
+        """Check if extension is allowed (case-insensitive)."""
+        return ext.lower() in cls.ALLOWED_EXTENSIONS
+
     def detect_duplicates(self, files: List[FileInfo], skip_hash: bool = False) -> Tuple[List[List[str]], List[FileInfo]]:
         """Find duplicate files based on MD5 hash or filename."""
-        # Filter to only allowed formats first
+        # Filter to only allowed formats first (case-insensitive)
         filtered_files = [file for file in files
-                         if file.extension in self.ALLOWED_EXTENSIONS]
+                         if self.is_allowed_extension(file.extension)]
 
         # Build hash map: key -> list of file infos
         # Key is either MD5 hash or normalized filename depending on skip_hash

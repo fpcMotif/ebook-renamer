@@ -9,11 +9,17 @@ use strsim::jaro_winkler;
 // Allowed formats to keep
 const ALLOWED_EXTENSIONS: &[&str] = &[".pdf", ".epub", ".txt"];
 
+fn is_allowed_extension(ext: &str) -> bool {
+    ALLOWED_EXTENSIONS
+        .iter()
+        .any(|allowed| ext.eq_ignore_ascii_case(allowed))
+}
+
 pub fn detect_duplicates(files: Vec<FileInfo>, skip_hash: bool) -> Result<(Vec<Vec<PathBuf>>, Vec<FileInfo>, Vec<(FileInfo, String)>)> {
     // Filter to only allowed formats first
     let filtered_files: Vec<FileInfo> = files
         .into_iter()
-        .filter(|f| ALLOWED_EXTENSIONS.contains(&f.extension.as_str()))
+        .filter(|f| is_allowed_extension(&f.extension))
         .collect();
     
     debug!("Filtered to {} files with allowed extensions", filtered_files.len());
@@ -462,6 +468,50 @@ mod tests {
 
         // Should keep f2 because it's newer (both have same depth and normalization status)
         assert_eq!(kept.original_name, "file2.pdf");
+    }
+
+    #[test]
+    fn test_detect_duplicates_uppercase_extension_included() -> Result<()> {
+        let tmp_dir = TempDir::new()?;
+
+        let file1 = tmp_dir.path().join("book1.PDF");
+        let file2 = tmp_dir.path().join("book2.PDF");
+        fs::write(&file1, "identical content")?;
+        fs::write(&file2, "identical content")?;
+
+        let now = std::time::SystemTime::now();
+        let files = vec![
+            FileInfo {
+                original_path: file1.clone(),
+                original_name: "book1.PDF".to_string(),
+                extension: ".PDF".to_string(),
+                size: 17,
+                modified_time: now,
+                is_failed_download: false,
+                is_too_small: false,
+                new_name: None,
+                new_path: file1.clone(),
+            },
+            FileInfo {
+                original_path: file2.clone(),
+                original_name: "book2.PDF".to_string(),
+                extension: ".PDF".to_string(),
+                size: 17,
+                modified_time: now,
+                is_failed_download: false,
+                is_too_small: false,
+                new_name: None,
+                new_path: file2.clone(),
+            },
+        ];
+
+        let (dup_groups, clean_files, errors) = detect_duplicates(files, false)?;
+        assert!(errors.is_empty());
+        assert_eq!(dup_groups.len(), 1);
+        assert_eq!(dup_groups[0].len(), 2);
+        assert_eq!(clean_files.len(), 1);
+
+        Ok(())
     }
 
     #[test]
@@ -1145,4 +1195,5 @@ mod tests {
         // All same depth and none normalized, should keep newest (f2)
         assert_eq!(kept.original_name, "file2.pdf");
     }
+
 }

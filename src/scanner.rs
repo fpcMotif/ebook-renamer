@@ -84,7 +84,8 @@ impl Scanner {
                 .unwrap_or_default()
         };
 
-        let is_failed_download = original_name.ends_with(".download") || original_name.ends_with(".crdownload");
+        let is_failed_download =
+            original_name.ends_with(".download") || original_name.ends_with(".crdownload");
         // Only check size for PDF and EPUB files (txt files can be small)
         let is_ebook = extension == ".pdf" || extension == ".epub";
         let is_too_small = !is_failed_download && is_ebook && size < 1024; // Less than 1KB
@@ -516,4 +517,3 @@ mod tests {
         assert!(!file_info.is_too_small);
     }
 }
-

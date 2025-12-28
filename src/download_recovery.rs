@@ -89,11 +89,15 @@ impl DownloadRecovery {
         // Extract each PDF file
         for pdf_file in pdf_files {
             let new_name = self.clean_filename(pdf_file.file_name().unwrap().to_str().unwrap());
-            let new_path = self.target_dir.join(&new_name);
+            let new_path = find_available_destination(&self.target_dir, &new_name);
             
             // Move PDF to target directory
             fs::rename(&pdf_file, &new_path)?;
-            info!("Extracted PDF: {:?} -> {:?}", pdf_file.file_name().unwrap(), new_name);
+            info!(
+                "Extracted PDF: {:?} -> {:?}",
+                pdf_file.file_name().unwrap(),
+                new_path.file_name().unwrap_or_default()
+            );
             result.extracted_files.push(new_path);
         }
 
@@ -116,13 +120,13 @@ impl DownloadRecovery {
     fn clean_filename(&self, original: &str) -> String {
         // Remove common suffixes like " (Z-Library)", " (Anna's Archive)", etc.
         let mut cleaned = original.to_string();
-        
+
         // Remove .pdf extension temporarily
         let has_pdf = cleaned.to_lowercase().ends_with(".pdf");
         if has_pdf {
             cleaned = cleaned[..cleaned.len() - 4].to_string();
         }
-        
+
         let suffixes_to_remove = [
             " (Z-Library)",
             " (z-Library)",
@@ -131,20 +135,47 @@ impl DownloadRecovery {
             " (libgen.lc)",
             " (Library Genesis)",
         ];
-        
+
         for suffix in &suffixes_to_remove {
             if cleaned.ends_with(suffix) {
                 cleaned = cleaned[..cleaned.len() - suffix.len()].to_string();
                 break;
             }
         }
-        
+
         // Ensure it ends with .pdf
         if !cleaned.to_lowercase().ends_with(".pdf") {
             cleaned.push_str(".pdf");
         }
-        
+
         cleaned
+    }
+}
+
+fn find_available_destination(target_dir: &Path, desired_name: &str) -> PathBuf {
+    let (base, ext) = split_name(desired_name);
+
+    for suffix in 0usize.. {
+        let candidate = if suffix == 0 {
+            desired_name.to_string()
+        } else {
+            format!("{} ({}){}", base, suffix, ext)
+        };
+
+        let candidate_path = target_dir.join(&candidate);
+        if !candidate_path.exists() {
+            return candidate_path;
+        }
+    }
+
+    // Unreachable: the loop above always returns
+    target_dir.join(desired_name)
+}
+
+fn split_name(name: &str) -> (&str, &str) {
+    match name.rfind('.') {
+        Some(dot) if dot > 0 => (&name[..dot], &name[dot..]),
+        _ => (name, ""),
     }
 }
 
@@ -256,6 +287,39 @@ mod tests {
 
         assert_eq!(result.extracted_files.len(), 1);
         assert_eq!(result.cleaned_folders.len(), 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_recover_downloads_does_not_overwrite_existing_file() -> Result<()> {
+        let tmp_dir = TempDir::new()?;
+
+        // Existing file in target directory that matches the cleaned name.
+        fs::write(tmp_dir.path().join("Test Book.pdf"), "existing content")?;
+
+        // Create a .download folder with a PDF inside that would clean to "Test Book.pdf"
+        let download_folder = tmp_dir.path().join("test.pdf.download");
+        fs::create_dir(&download_folder)?;
+
+        let pdf_inside = download_folder.join("Test Book (Z-Library).pdf");
+        fs::write(&pdf_inside, "new content")?;
+
+        let recovery = DownloadRecovery::new(tmp_dir.path(), true);
+        let result = recovery.recover_downloads()?;
+
+        assert_eq!(result.extracted_files.len(), 1);
+        assert!(result.extracted_files[0].file_name().unwrap() == "Test Book (1).pdf");
+
+        // Both files should exist with their original content.
+        assert_eq!(
+            fs::read_to_string(tmp_dir.path().join("Test Book.pdf"))?,
+            "existing content"
+        );
+        assert_eq!(
+            fs::read_to_string(tmp_dir.path().join("Test Book (1).pdf"))?,
+            "new content"
+        );
 
         Ok(())
     }

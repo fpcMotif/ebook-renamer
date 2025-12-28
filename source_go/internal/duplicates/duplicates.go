@@ -11,19 +11,24 @@ import (
 	"github.com/ebook-renamer/go/internal/types"
 )
 
-// Allowed formats to keep
+// Allowed formats to keep (lowercase for case-insensitive comparison)
 var allowedExtensions = map[string]bool{
 	".pdf":  true,
 	".epub": true,
 	".txt":  true,
 }
 
+// isAllowedExtension checks if extension is allowed (case-insensitive)
+func isAllowedExtension(ext string) bool {
+	return allowedExtensions[strings.ToLower(ext)]
+}
+
 // DetectDuplicates finds duplicate files based on MD5 hash or filename
 func DetectDuplicates(files []*types.FileInfo, skipHash bool) ([][]string, []*types.FileInfo, error) {
-	// Filter to only allowed formats first
+	// Filter to only allowed formats first (case-insensitive)
 	var filteredFiles []*types.FileInfo
 	for _, file := range files {
-		if allowedExtensions[file.Extension] {
+		if isAllowedExtension(file.Extension) {
 			filteredFiles = append(filteredFiles, file)
 		}
 	}

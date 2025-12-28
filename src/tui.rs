@@ -184,19 +184,21 @@ fn run_process(mut args: Args, tx: mpsc::Sender<AppEvent>) -> Result<()> {
     tx.send(AppEvent::CheckComplete)?;
 
     // 5. Duplicates
-    let (duplicate_groups, clean_files, _hash_errors) = duplicates::detect_duplicates(normalized, args.skip_cloud_hash)?;
+    let (duplicate_groups, mut clean_files, _hash_errors) = duplicates::detect_duplicates(normalized, args.skip_cloud_hash)?;
     // We could report hash_errors in the TUI logs, but for now we just ignore them in the TUI view
     // (they will be in todo.md when written)
     tx.send(AppEvent::DuplicatesComplete(duplicate_groups.clone()))?;
 
+    // 5.5. Resolve rename collisions BEFORE executing
+    // CRITICAL: This prevents data loss from overwriting files with same target name
+    crate::renamer::resolve_rename_collisions(&mut clean_files)?;
+
     // 6. Execute
     if !args.dry_run {
-        // Execute renames
-        for file_info in &clean_files {
-            if let Some(ref _new_name) = file_info.new_name {
-                std::fs::rename(&file_info.original_path, &file_info.new_path)?;
-            }
-        }
+        // Execute renames using the cycle-safe renamer (handles A->B, B->A cases)
+        // CRITICAL: Do NOT use raw fs::rename - it doesn't handle cycles or collisions
+        crate::renamer::execute_renames(&clean_files)?;
+
         // Delete duplicates
         if !args.no_delete {
             for group in &duplicate_groups {
@@ -294,7 +296,7 @@ mod tests {
         println!("Buffer content:");
         for y in 0..buffer.area.height {
             let line_str = (0..buffer.area.width)
-                .map(|x| buffer.get(x, y).symbol())
+                .map(|x| buffer[(x, y)].symbol())
                 .collect::<String>();
             println!("{:2}: {}", y, line_str);
         }
@@ -323,7 +325,7 @@ mod tests {
         let mut found = false;
         for y in 0..buffer.area.height {
             let line_str = (0..buffer.area.width)
-                .map(|x| buffer.get(x, y).symbol())
+                .map(|x| buffer[(x, y)].symbol())
                 .collect::<String>();
             if line_str.contains(s) {
                 found = true;
@@ -338,11 +340,11 @@ mod tests {
         let mut found = false;
         for y in 0..buffer.area.height {
             let line_len = buffer.area.width;
-            let line_cells: Vec<_> = (0..line_len).map(|x| buffer.get(x, y)).collect();
+            let line_cells: Vec<_> = (0..line_len).map(|x| buffer[(x, y)].clone()).collect();
             let line_str: String = line_cells.iter().map(|c| c.symbol()).collect();
 
             if let Some(idx) = line_str.find(text) {
-                let cell = line_cells[idx];
+                let cell = line_cells[idx].clone();
                 assert_eq!(cell.fg, expected_fg, "Text '{}' at y={} has wrong color. Expected {:?}, got {:?}", text, y, expected_fg, cell.fg);
                 found = true;
                 break;

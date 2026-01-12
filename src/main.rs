@@ -9,6 +9,10 @@ mod tui;
 mod cloud;
 mod renamer;
 mod security;
+mod config;
+mod metadata;
+mod progress;
+mod backup;
 
 
 use anyhow::Result;
@@ -17,6 +21,8 @@ use cli::Args;
 use log::info;
 use download_recovery::DownloadRecovery;
 use colored::*;
+use config::Config;
+use metadata::{MetadataExtractor, ArxivClient};
 
 fn main() -> Result<()> {
     env_logger::Builder::from_default_env()
@@ -25,6 +31,14 @@ fn main() -> Result<()> {
 
     let mut args = Args::parse();
     info!("Starting ebook renamer with args: {:?}", args);
+
+    // Load config file
+    let config = Config::load().unwrap_or_default();
+
+    // Apply config defaults if CLI args not set
+    if !args.dry_run && config.dry_run_default() {
+        args.dry_run = true;
+    }
 
     // Auto-detect cloud storage and enable skip_cloud_hash if not explicitly set
     if !args.skip_cloud_hash {
@@ -43,15 +57,32 @@ fn main() -> Result<()> {
         }
     }
 
-    // Handle --fetch-arxiv placeholder
-    if args.fetch_arxiv {
-        println!("{} {}",
-            "⚠️  Warning:".yellow().bold(),
-            "--fetch-arxiv is not implemented yet. Files will be processed offline only.".yellow()
-        );
+    // Handle --fetch-arxiv
+    if args.fetch_arxiv || config.fetch_arxiv() {
+        if !args.json {
+            println!("{} Fetching arXiv metadata for matching files...", "ℹ️".blue().bold());
+        }
     }
 
-    if !args.json {
+    // Handle metadata extraction
+    if args.extract_metadata || config.extract_metadata() {
+        if !args.json {
+            println!("{} Extracting metadata from EPUB/PDF files...", "ℹ️".blue().bold());
+        }
+    }
+
+    // Initialize arXiv client if needed
+    let arxiv_client = if args.fetch_arxiv || config.fetch_arxiv() {
+        Some(ArxivClient::new()?)
+    } else {
+        None
+    };
+
+    if !args.json && config.interactive_mode() && !args.dry_run {
+        println!("{} Interactive mode enabled - you will be prompted for each rename", "ℹ️".blue().bold());
+    }
+
+    if args.tui {
         return tui::run(args).map_err(|e| anyhow::anyhow!(e));
     }
 
@@ -82,8 +113,30 @@ fn main() -> Result<()> {
     let effective_max_depth = if args.no_recursive { 1 } else { args.max_depth };
     
     let mut scanner = scanner::Scanner::new(&args.path, effective_max_depth)?;
-    let files = scanner.scan()?;
+    let mut files = scanner.scan()?;
     info!("Found {} files to process", files.len());
+
+    // Extract metadata from files if enabled
+    if args.extract_metadata || config.extract_metadata() {
+        for file_info in &mut files {
+            if let Ok(metadata) = MetadataExtractor::extract_from_file(&file_info.original_path) {
+                if !metadata.is_empty() {
+                    info!("Extracted metadata for {}: {:?}", file_info.original_name, metadata);
+                }
+            }
+        }
+    }
+
+    // Fetch arXiv metadata if enabled
+    if let Some(ref client) = arxiv_client {
+        for file_info in &mut files {
+            if let Some(arxiv_id) = ArxivClient::detect_arxiv_id(&file_info.original_name) {
+                if let Ok(Some(metadata)) = client.fetch_metadata(&arxiv_id) {
+                    info!("Fetched arXiv metadata for {}: {:?}", arxiv_id, metadata);
+                }
+            }
+        }
+    }
 
     // Parse and normalize filenames
     let normalized = normalizer::normalize_files(files)?;
@@ -170,6 +223,15 @@ fn main() -> Result<()> {
                 &args.path,
             )?;
             println!("{}", operations.to_json()?);
+        } else if args.csv {
+            let operations = json_output::OperationsOutput::from_results(
+                clean_files,
+                duplicate_groups,
+                files_to_delete,
+                todo_items,
+                &args.path,
+            )?;
+            println!("{}", operations.to_csv()?);
         } else {
             // Human-readable output with rich text
             println!("\n{}", "═══ DRY RUN MODE ═══".bold().bright_blue());
@@ -244,6 +306,29 @@ fn main() -> Result<()> {
         // Initialize undo log if requested
         let mut undo_log = json_output::UndoLog::new(&args.path, false);
 
+        // Initialize backup manager if requested
+        let mut backup_manager = if let Some(ref backup_path) = args.backup_dir {
+            let manager = backup::BackupManager::new(backup_path)?;
+            if !args.json {
+                println!("{} Backup directory: {}",
+                    "📦".bright_white(),
+                    manager.backup_dir().display().to_string().bright_cyan()
+                );
+            }
+            Some(manager)
+        } else {
+            None
+        };
+
+        // Backup files before renaming
+        if let Some(ref mut manager) = backup_manager {
+            for file_info in &clean_files {
+                if file_info.new_name.is_some() && file_info.original_path != file_info.new_path {
+                    manager.backup_file(&file_info.original_path)?;
+                }
+            }
+        }
+
         // Execute renames (cycle-safe)
         renamer::execute_renames(&clean_files)?;
 
@@ -260,6 +345,10 @@ fn main() -> Result<()> {
                 if group.len() > 1 {
                     for (idx, path) in group.iter().enumerate() {
                         if idx > 0 {
+                            // Backup before deleting
+                            if let Some(ref mut manager) = backup_manager {
+                                manager.backup_file(path)?;
+                            }
                             // Get file size before deletion for undo log
                             let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
                             std::fs::remove_file(path)?;
@@ -278,6 +367,10 @@ fn main() -> Result<()> {
                 files_to_delete.len().to_string().red().bold()
             );
             for path in &files_to_delete {
+                // Backup before deleting
+                if let Some(ref mut manager) = backup_manager {
+                    manager.backup_file(path)?;
+                }
                 // Get file size before deletion for undo log
                 let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
                 std::fs::remove_file(path)?;
@@ -298,6 +391,26 @@ fn main() -> Result<()> {
                 println!("{} Undo log written to: {}",
                     "✓".green().bold(),
                     undo_log_path.display().to_string().bright_cyan()
+                );
+            }
+        }
+
+        // Write undo script if path specified
+        if let Some(ref undo_script_path) = args.undo_script {
+            let script = undo_log.generate_undo_script();
+            std::fs::write(undo_script_path, &script)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = std::fs::metadata(undo_script_path)?.permissions();
+                perms.set_mode(0o755);
+                std::fs::set_permissions(undo_script_path, perms)?;
+            }
+            info!("Wrote undo script to {:?}", undo_script_path);
+            if !args.json && !args.csv {
+                println!("{} Undo script written to: {}",
+                    "✓".green().bold(),
+                    undo_script_path.display().to_string().bright_cyan()
                 );
             }
         }

@@ -118,10 +118,11 @@ impl DownloadRecovery {
     }
 
     fn clean_filename(&self, original: &str) -> String {
-        // Remove common suffixes like " (Z-Library)", " (Anna's Archive)", etc.
+        if original.contains("..") || original.contains('/') || original.contains('\\') {
+            return "invalid_filename.pdf".to_string();
+        }
         let mut cleaned = original.to_string();
 
-        // Remove .pdf extension temporarily
         let has_pdf = cleaned.to_lowercase().ends_with(".pdf");
         if has_pdf {
             cleaned = cleaned[..cleaned.len() - 4].to_string();
@@ -143,7 +144,6 @@ impl DownloadRecovery {
             }
         }
 
-        // Ensure it ends with .pdf
         if !cleaned.to_lowercase().ends_with(".pdf") {
             cleaned.push_str(".pdf");
         }
@@ -153,9 +153,10 @@ impl DownloadRecovery {
 }
 
 fn find_available_destination(target_dir: &Path, desired_name: &str) -> PathBuf {
+    const MAX_NAME_RETRIES: usize = 1000;
     let (base, ext) = split_name(desired_name);
 
-    for suffix in 0usize.. {
+    for suffix in 0..MAX_NAME_RETRIES {
         let candidate = if suffix == 0 {
             desired_name.to_string()
         } else {
@@ -168,8 +169,7 @@ fn find_available_destination(target_dir: &Path, desired_name: &str) -> PathBuf 
         }
     }
 
-    // Unreachable: the loop above always returns
-    target_dir.join(desired_name)
+    panic!("Could not find available destination after {} retries", MAX_NAME_RETRIES);
 }
 
 fn split_name(name: &str) -> (&str, &str) {

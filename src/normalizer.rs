@@ -1,7 +1,14 @@
 use crate::scanner::FileInfo;
 use anyhow::Result;
 use log::debug;
+use once_cell::sync::Lazy;
 use regex::Regex;
+
+// Pre-compiled regexes for performance
+static RE_BRACKET: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s*\[[^\]]*\]").unwrap());
+static RE_PAREN_NUM: Lazy<Regex> = Lazy::new(|| Regex::new(r"[-\s]*\(\d{1,2}\)\s*$").unwrap());
+static RE_DASH_NUM: Lazy<Regex> = Lazy::new(|| Regex::new(r"-\d{1,2}\s*$").unwrap());
+static RE_DASH_NUM_PAREN: Lazy<Regex> = Lazy::new(|| Regex::new(r"-\d{1,2}\s+\(").unwrap());
 
 pub struct ParsedMetadata {
     pub authors: Option<String>,
@@ -50,15 +57,15 @@ fn parse_filename(filename: &str, extension: &str) -> Result<ParsedMetadata> {
 
     // Step 3: Remove ALL bracketed annotations [Lecture notes], [masters thesis], etc.
     // BUT preserve series info that was already extracted
-    base = Regex::new(r"\s*\[[^\]]*\]").unwrap().replace_all(&base, "").to_string();
+    base = RE_BRACKET.replace_all(&base, "").to_string();
 
     // Step 4: Clean noise sources (Z-Library, libgen, Anna's Archive, hashes)
     base = clean_noise_sources(&base);
 
     // Step 5: Remove duplicate markers: -2, -3, (1), (2), etc.
-    base = Regex::new(r"[-\s]*\(\d{1,2}\)\s*$").unwrap().replace(&base, "").to_string();
-    base = Regex::new(r"-\d{1,2}\s*$").unwrap().replace(&base, "").to_string();
-    base = Regex::new(r"-\d{1,2}\s+\(").unwrap().replace(&base, " (").to_string();
+    base = RE_PAREN_NUM.replace(&base, "").to_string();
+    base = RE_DASH_NUM.replace(&base, "").to_string();
+    base = RE_DASH_NUM_PAREN.replace(&base, " (").to_string();
 
     // Step 6: Extract edition information
     let (edition_info, base_after_edition) = extract_edition(&base);

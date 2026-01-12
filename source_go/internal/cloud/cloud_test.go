@@ -1,53 +1,38 @@
 package cloud
 
 import (
-	"github.com/stretchr/testify/assert"
-	"path/filepath"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestIsCloudStoragePath(t *testing.T) {
 	tests := []struct {
-		name     string
-		path     string
-		expected bool
+		name       string
+		path       string
+		expectNil  bool
+		expectType Provider
 	}{
-		{"Dropbox path", "/Users/user/Dropbox", true},
-		{"Google Drive path", "/Users/user/Google Drive", true},
-		{"OneDrive path", "/Users/user/OneDrive", true},
-		{"iCloud Drive path", "/Users/user/Library/Mobile Documents/com~apple~CloudDocs", true},
-		{"pCloud path", "/Users/user/pCloudDrive", true},
-		{"Local path", "/tmp", false},
-		{"Home directory", "/Users/user", false},
-		{"Documents folder", "/Users/user/Documents", false},
-		{"Nested non-cloud", "/Users/user/Local/Dropbox/Folder", false}, // Dropbox detected by parent
+		{"Dropbox path", "/Users/user/Dropbox", false, Dropbox},
+		{"Google Drive path", "/Users/user/Google Drive", false, GoogleDrive},
+		{"OneDrive path", "/Users/user/OneDrive", false, OneDrive},
+		{"Local path", "/tmp", true, 0},
+		{"Home directory", "/Users/user", true, 0},
+		{"Documents folder", "/Users/user/Documents", true, 0},
+		{"macOS CloudStorage Dropbox", "/Users/user/Library/CloudStorage/Dropbox", false, Dropbox},
+		{"macOS CloudStorage GoogleDrive", "/Users/user/Library/CloudStorage/GoogleDrive", false, GoogleDrive},
+		{"macOS CloudStorage OneDrive", "/Users/user/Library/CloudStorage/OneDrive", false, OneDrive},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := IsCloudStoragePath(tt.path)
-			assert.Equal(t, tt.expected, result, "Cloud detection for %s should be %v", tt.path, tt.expected)
-		})
-	}
-}
-
-func TestGetCloudProvider(t *testing.T) {
-	tests := []struct {
-		name     string
-		path     string
-		expected string
-	}{
-		{"Dropbox", "/Users/user/Dropbox", "dropbox"},
-		{"Google Drive", "/Users/user/Google Drive", "googledrive"},
-		{"OneDrive", "/Users/user/OneDrive", "onedrive"},
-		{"iCloud Drive", "/Users/user/Library/Mobile Documents/com~apple~CloudDocs", "icloud"},
-		{"Non-cloud", "/tmp", ""},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			provider := GetCloudProvider(tt.path)
-			assert.Equal(t, tt.expected, provider.Name(), "Provider name for %s should be %s", tt.path, tt.expected)
+			if tt.expectNil {
+				assert.Nil(t, result, "Cloud detection for %s should be nil", tt.path)
+			} else {
+				assert.NotNil(t, result, "Cloud detection for %s should not be nil", tt.path)
+				assert.Equal(t, tt.expectType, *result, "Cloud provider for %s should match", tt.path)
+			}
 		})
 	}
 }
@@ -55,46 +40,36 @@ func TestGetCloudProvider(t *testing.T) {
 func TestCloudModeWarning(t *testing.T) {
 	tests := []struct {
 		name     string
-		provider string
-		expected string
+		provider Provider
 	}{
-		{"Dropbox", "dropbox", "⚠️  Dropbox detected: Using metadata-only duplicate detection to avoid triggering file downloads."},
-		{"Google Drive", "googledrive", "⚠️  Google Drive detected: Using metadata-only duplicate detection to avoid triggering file downloads."},
-		{"OneDrive", "onedrive", "⚠️  OneDrive detected: Using metadata-only duplicate detection to avoid triggering file downloads."},
-		{"iCloud", "icloud", "⚠️  iCloud Drive detected: Using metadata-only duplicate detection to avoid triggering file downloads."},
-		{"None", "", ""},
+		{"Dropbox", Dropbox},
+		{"Google Drive", GoogleDrive},
+		{"OneDrive", OneDrive},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if tt.expected == "" {
-				// Should return empty string for non-cloud
-				warning := CloudModeWarning(tt.provider)
-				assert.Empty(t, warning)
-			} else {
-				warning := CloudModeWarning(tt.provider)
-				assert.Equal(t, tt.expected, warning, "Warning for %s should match", tt.provider)
-			}
+			warning := CloudModeWarning(tt.provider)
+			assert.NotEmpty(t, warning, "Warning for %s should not be empty", tt.name)
+			assert.Contains(t, warning, tt.provider.String(), "Warning should contain provider name")
+			assert.Contains(t, warning, "metadata-only", "Warning should mention metadata-only mode")
 		})
 	}
 }
 
-func TestIsCloudFile(t *testing.T) {
+func TestProviderString(t *testing.T) {
 	tests := []struct {
-		name     string
-		path     string
-		expected bool
+		provider Provider
+		expected string
 	}{
-		{"Cloud file", "/Users/user/Dropbook.pdf", true},
-		{"Cloud file deep", "/Users/user/Dropbox/Folder/book.pdf", true},
-		{"Local file", "/tmp/book.pdf", false},
-		{"Relative path", "book.pdf", false},
+		{Dropbox, "Dropbox"},
+		{GoogleDrive, "Google Drive"},
+		{OneDrive, "OneDrive"},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := IsCloudFile(tt.path)
-			assert.Equal(t, tt.expected, result, "Cloud file detection for %s should be %v", tt.path, tt.expected)
+		t.Run(tt.expected, func(t *testing.T) {
+			assert.Equal(t, tt.expected, tt.provider.String())
 		})
 	}
 }

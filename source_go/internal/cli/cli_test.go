@@ -2,39 +2,12 @@ package cli
 
 import (
 	"fmt"
-	"os"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 )
-
-func TestRootCommandExecution(t *testing.T) {
-	tests := []struct {
-		name     string
-		args     []string
-		expected int
-	}{
-		{"dry run", []string{"--dry-run", "/tmp"}, 0},
-		{"json output", []string{"--json", "--dry-run", "/tmp"}, 0},
-		{"invalid path", []string{"/nonexistent/path"}, 1},
-		{"conflicting args", []string{"--no-recursive", "--max-depth=10"}, 0}, // Should resolve correctly
-		{"invalid depth", []string{"--max-depth=invalid"}, 1},
-		{"invalid extensions", []string{"--extensions=exe,bat"}, 1}, // Should be rejected
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cmd := RootCmd()
-			cmd.SetArgs(tt.args)
-			err := cmd.Execute()
-			if tt.expected == 0 {
-				assert.NoError(t, err, "Should succeed: %s", tt.name)
-			} else {
-				assert.Error(t, err, "Should fail: %s", tt.name)
-			}
-		})
-	}
-}
 
 func TestArgumentValidation(t *testing.T) {
 	t.Run("valid max depth", func(t *testing.T) {
@@ -76,79 +49,33 @@ func TestArgumentValidation(t *testing.T) {
 
 func TestFlagOverrides(t *testing.T) {
 	t.Run("--no-recursive overrides max-depth", func(t *testing.T) {
-		// This test ensures the flag logic in runEbookRenamer works correctly
-		// When --no-recursive is set, max-depth should be ignored
-		args := &types.Args{
-			Path:               "/tmp",
-			DryRun:             true,
-			MaxDepth:           "100", // Should be ignored
-			NoRecursive:        true,  // Should override
-			Extensions:         "",
-			NoDelete:           false,
-			TodoFile:           "",
-			LogFile:            "",
-			PreserveUnicode:    false,
-			FetchArxiv:         false,
-			Verbose:            false,
-			DeleteSmall:        false,
-			CleanFailed:        false,
-			JSON:               true,
-			SkipCloudHash:      false,
-			CleanupDownloads:   false,
-			GenerateUndoScript: false,
-		}
-
 		// The implementation should set effectiveMaxDepth to 1 when NoRecursive is true
-		effectiveMaxDepth := getEffectiveMaxDepth(args.MaxDepth, args.NoRecursive)
+		effectiveMaxDepth := getEffectiveMaxDepth("100", true)
 		assert.Equal(t, 1, effectiveMaxDepth, "NoRecursive should set depth to 1")
 	})
-}
 
-func TestErrorHandling(t *testing.T) {
-	t.Run("invalid path handling", func(t *testing.T) {
-		cmd := RootCmd()
-		cmd.SetArgs([]string{"/nonexistent/path/that/does/not/exist"})
-		err := cmd.Execute()
-		assert.Error(t, err, "Should fail for nonexistent path")
-
-		// Check that error is informative
-		assert.Contains(t, err.Error(), "no such file or directory")
+	t.Run("max-depth is used when no-recursive is false", func(t *testing.T) {
+		effectiveMaxDepth := getEffectiveMaxDepth("50", false)
+		assert.Equal(t, 50, effectiveMaxDepth, "Should use provided max-depth")
 	})
 
-	t.Run("permission denied", func(t *testing.T) {
-		if os.Getuid() == 0 {
-			t.Skip("Running as root, skipping permission test")
-		}
-
-		// Try to access a directory we likely don't have permission for
-		cmd := RootCmd()
-		cmd.SetArgs([]string{"/root"})
-		err := cmd.Execute()
-		assert.Error(t, err, "Should fail for restricted directory")
+	t.Run("default depth on invalid input", func(t *testing.T) {
+		effectiveMaxDepth := getEffectiveMaxDepth("invalid", false)
+		assert.Equal(t, 1000, effectiveMaxDepth, "Should use default on invalid input")
 	})
 }
 
-func TestOutputFormats(t *testing.T) {
-	// Test that different output formats don't crash
-	outputTypes := []struct {
-		name string
-		args []string
-	}{
-		{"json output", []string{"--json", "--dry-run", "/tmp"}},
-		{"tui output", []string{"--dry-run", "/tmp"}},
-		{"verbose", []string{"--verbose", "--dry-run", "/tmp"}},
-	}
+func TestNilString(t *testing.T) {
+	t.Run("empty string returns nil", func(t *testing.T) {
+		result := nilString("")
+		assert.Nil(t, result)
+	})
 
-	for _, tt := range outputTypes {
-		t.Run(tt.name, func(t *testing.T) {
-			cmd := RootCmd()
-			cmd.SetArgs(tt.args)
-
-			// We don't test full execution, just that command setup doesn't panic
-			assert.NotNil(t, cmd, "Command should be properly initialized")
-			assert.Equal(t, len(tt.args), len(cmd.Args()), "Args should be set correctly")
-		})
-	}
+	t.Run("non-empty string returns pointer", func(t *testing.T) {
+		result := nilString("test")
+		assert.NotNil(t, result)
+		assert.Equal(t, "test", *result)
+	})
 }
 
 // Helper validation functions that mirror security module

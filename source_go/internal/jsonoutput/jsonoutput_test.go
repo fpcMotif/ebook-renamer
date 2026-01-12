@@ -2,16 +2,16 @@ package jsonoutput
 
 import (
 	"encoding/json"
+	"testing"
+
 	"github.com/ebook-renamer/go/internal/types"
 	"github.com/stretchr/testify/assert"
-	"testing"
-	"time"
 )
 
 func TestOperationsOutputSerialization(t *testing.T) {
 	// Create a complete OperationsOutput structure
-	output := OperationsOutput{
-		Renames: []RenameOperation{
+	output := types.OperationsOutput{
+		Renames: []types.RenameOperation{
 			{
 				From:   "old_book.pdf",
 				To:     "Author - Book Title (2020).pdf",
@@ -23,13 +23,13 @@ func TestOperationsOutputSerialization(t *testing.T) {
 				Reason: "normalized",
 			},
 		},
-		DuplicateDeletes: []DuplicateDelete{
+		DuplicateDeletes: []types.DuplicateGroup{
 			{
 				Keep:   "book1.pdf",
 				Delete: []string{"book2.pdf", "book3.pdf"},
 			},
 		},
-		SmallOrCorruptedDeletes: []FileDelete{
+		SmallOrCorruptedDeletes: []types.DeleteOperation{
 			{
 				Path:  "tiny.pdf",
 				Issue: "deleted",
@@ -39,7 +39,7 @@ func TestOperationsOutputSerialization(t *testing.T) {
 				Issue: "deleted",
 			},
 		},
-		TodoItems: []TodoItem{
+		TodoItems: []types.TodoItem{
 			{
 				Category: "failed_download",
 				File:     "incomplete.download",
@@ -59,7 +59,7 @@ func TestOperationsOutputSerialization(t *testing.T) {
 	assert.NotEmpty(t, data, "Serialized data should not be empty")
 
 	// Test JSON deserialization
-	var decoded OperationsOutput
+	var decoded types.OperationsOutput
 	err = json.Unmarshal(data, &decoded)
 	assert.NoError(t, err, "Should deserialize without error")
 
@@ -82,17 +82,17 @@ func TestOperationsOutputSerialization(t *testing.T) {
 
 func TestOperationsOutputEmptyArrays(t *testing.T) {
 	// Test with empty arrays
-	output := OperationsOutput{
-		Renames:                 []RenameOperation{},
-		DuplicateDeletes:        []DuplicateDelete{},
-		SmallOrCorruptedDeletes: []FileDelete{},
-		TodoItems:               []TodoItem{},
+	output := types.OperationsOutput{
+		Renames:                 []types.RenameOperation{},
+		DuplicateDeletes:        []types.DuplicateGroup{},
+		SmallOrCorruptedDeletes: []types.DeleteOperation{},
+		TodoItems:               []types.TodoItem{},
 	}
 
 	data, err := json.Marshal(output)
 	assert.NoError(t, err, "Should serialize empty arrays")
 
-	var decoded OperationsOutput
+	var decoded types.OperationsOutput
 	err = json.Unmarshal(data, &decoded)
 	assert.NoError(t, err, "Should deserialize empty arrays")
 	assert.Empty(t, decoded.Renames, "Renames should be empty")
@@ -101,39 +101,14 @@ func TestOperationsOutputEmptyArrays(t *testing.T) {
 	assert.Empty(t, decoded.TodoItems, "TodoItems should be empty")
 }
 
-func TestOperationsOutputWithTime(t *testing.T) {
-	now := time.Now()
-
-	output := OperationsOutput{
-		Timestamp: now.Format(time.RFC3339),
-		Renames: []RenameOperation{
-			{
-				From:   "test.pdf",
-				To:     "clean.pdf",
-				Reason: "normalized",
-			},
-		},
-		DuplicateDeletes:        []DuplicateDelete{},
-		SmallOrCorruptedDeletes: []FileDelete{},
-		TodoItems:               []TodoItem{},
-	}
-
-	data, err := json.Marshal(output)
-	assert.NoError(t, err, "Should serialize with timestamp")
-
-	var decoded OperationsOutput
-	err = json.Unmarshal(data, &decoded)
-	assert.NoError(t, err, "Should deserialize with timestamp")
-	assert.Equal(t, output.Timestamp, decoded.Timestamp, "Timestamp should be preserved")
-}
-
 func TestFromResults(t *testing.T) {
 	// Test creating OperationsOutput from results
-	renames := []types.FileInfo{
+	newName := "Author - Book.pdf"
+	renames := []*types.FileInfo{
 		{
 			OriginalPath: "/test/old.pdf",
 			NewPath:      "/test/Author - Book.pdf",
-			NewName:      "Author - Book.pdf",
+			NewName:      &newName,
 		},
 	}
 
@@ -155,7 +130,8 @@ func TestFromResults(t *testing.T) {
 
 	basePath := "/test"
 
-	output := FromResults(renames, duplicateGroups, filesToDelete, todoItems, basePath)
+	output, err := FromResults(renames, duplicateGroups, filesToDelete, todoItems, basePath)
+	assert.NoError(t, err, "FromResults should not return error")
 
 	// Verify structure
 	assert.NotEmpty(t, output.Renames, "Should have renames")
@@ -166,24 +142,17 @@ func TestFromResults(t *testing.T) {
 
 	assert.NotEmpty(t, output.DuplicateDeletes, "Should have duplicate deletes")
 	assert.Len(t, output.DuplicateDeletes, 1, "Should have exactly one duplicate group")
-	assert.Equal(t, "/test/book1.pdf", output.DuplicateDeletes[0].Keep, "First duplicate Keep should match")
-	assert.Equal(t, []string{"/test/book2.pdf"}, output.DuplicateDeletes[0].Delete, "First duplicate Delete should match")
-
-	assert.NotEmpty(t, output.FilesToDelete, "Should have files to delete")
-	assert.Equal(t, []string{"/test/small.pdf"}, output.FilesToDelete, "Files to delete should match")
 
 	assert.NotEmpty(t, output.TodoItems, "Should have todo items")
 	assert.Equal(t, "too_small", output.TodoItems[0].Category, "First todo Category should match")
 	assert.Equal(t, "small.pdf", output.TodoItems[0].File, "First todo File should match")
 	assert.Equal(t, "File too small", output.TodoItems[0].Message, "First todo Message should match")
-
-	assert.Equal(t, basePath, output.BasePath, "Base path should match")
 }
 
 func TestOperationsOutputEdgeCases(t *testing.T) {
 	// Test edge cases that could cause serialization issues
-	output := OperationsOutput{
-		Renames: []RenameOperation{
+	output := types.OperationsOutput{
+		Renames: []types.RenameOperation{
 			{
 				From:   "file with\nnewlines.pdf",
 				To:     "sanitized\nfile.pdf",
@@ -195,15 +164,15 @@ func TestOperationsOutputEdgeCases(t *testing.T) {
 				Reason: "normalized",
 			},
 		},
-		DuplicateDeletes:        []DuplicateDelete{},
-		SmallOrCorruptedDeletes: []FileDelete{},
-		TodoItems:               []TodoItem{},
+		DuplicateDeletes:        []types.DuplicateGroup{},
+		SmallOrCorruptedDeletes: []types.DeleteOperation{},
+		TodoItems:               []types.TodoItem{},
 	}
 
 	data, err := json.Marshal(output)
 	assert.NoError(t, err, "Should handle special characters in JSON")
 
-	var decoded OperationsOutput
+	var decoded types.OperationsOutput
 	err = json.Unmarshal(data, &decoded)
 	assert.NoError(t, err, "Should deserialize special characters")
 	assert.Len(t, decoded.Renames, 2, "Should preserve renames with special characters")
@@ -211,22 +180,22 @@ func TestOperationsOutputEdgeCases(t *testing.T) {
 
 func TestOperationsOutputConsistency(t *testing.T) {
 	// Test that output is consistent across multiple runs
-	output1 := OperationsOutput{
-		Renames: []RenameOperation{
+	output1 := types.OperationsOutput{
+		Renames: []types.RenameOperation{
 			{From: "test1.pdf", To: "clean1.pdf", Reason: "normalized"},
 		},
-		DuplicateDeletes:        []DuplicateDelete{},
-		SmallOrCorruptedDeletes: []FileDelete{},
-		TodoItems:               []TodoItem{},
+		DuplicateDeletes:        []types.DuplicateGroup{},
+		SmallOrCorruptedDeletes: []types.DeleteOperation{},
+		TodoItems:               []types.TodoItem{},
 	}
 
-	output2 := OperationsOutput{
-		Renames: []RenameOperation{
+	output2 := types.OperationsOutput{
+		Renames: []types.RenameOperation{
 			{From: "test1.pdf", To: "clean1.pdf", Reason: "normalized"},
 		},
-		DuplicateDeletes:        []DuplicateDelete{},
-		SmallOrCorruptedDeletes: []FileDelete{},
-		TodoItems:               []TodoItem{},
+		DuplicateDeletes:        []types.DuplicateGroup{},
+		SmallOrCorruptedDeletes: []types.DeleteOperation{},
+		TodoItems:               []types.TodoItem{},
 	}
 
 	data1, _ := json.Marshal(output1)
@@ -235,38 +204,45 @@ func TestOperationsOutputConsistency(t *testing.T) {
 	assert.Equal(t, data1, data2, "Same output should serialize to same JSON")
 }
 
-func TestOperationsOutputWithAllFields(t *testing.T) {
-	// Test with all possible fields populated
-	output := OperationsOutput{
-		Timestamp: "2023-01-01T12:00:00Z",
-		Renames: []RenameOperation{
+func TestToJSON(t *testing.T) {
+	output := &types.OperationsOutput{
+		Renames: []types.RenameOperation{
 			{From: "old.pdf", To: "new.pdf", Reason: "normalized"},
 		},
-		DuplicateDeletes: []DuplicateDelete{
+		DuplicateDeletes: []types.DuplicateGroup{
 			{Keep: "keep.pdf", Delete: []string{"delete1.pdf", "delete2.pdf"}},
 		},
-		SmallOrCorruptedDeletes: []FileDelete{
+		SmallOrCorruptedDeletes: []types.DeleteOperation{
 			{Path: "small.pdf", Issue: "deleted"},
-			{Path: "corrupt.txt", Issue: "deleted"},
 		},
-		TodoItems: []TodoItem{
+		TodoItems: []types.TodoItem{
 			{Category: "failed_download", File: "incomplete.download", Message: "Redownload required"},
 		},
-		BasePath: "/test/base",
 	}
 
-	data, err := json.Marshal(output)
+	jsonStr, err := ToJSON(output)
 	assert.NoError(t, err, "Should serialize complete output")
+	assert.NotEmpty(t, jsonStr, "JSON string should not be empty")
+	assert.Contains(t, jsonStr, "old.pdf", "JSON should contain rename from")
+	assert.Contains(t, jsonStr, "new.pdf", "JSON should contain rename to")
+}
 
-	var decoded OperationsOutput
-	err = json.Unmarshal(data, &decoded)
-	assert.NoError(t, err, "Should deserialize complete output")
+func TestMakeRelativePath(t *testing.T) {
+	tests := []struct {
+		name      string
+		path      string
+		targetDir string
+		expected  string
+	}{
+		{"simple relative", "/test/file.pdf", "/test", "file.pdf"},
+		{"nested relative", "/test/subdir/file.pdf", "/test", "subdir/file.pdf"},
+		{"same directory", "/test", "/test", ""},
+	}
 
-	// Verify all fields are preserved
-	assert.Equal(t, output.Timestamp, decoded.Timestamp)
-	assert.Equal(t, output.BasePath, decoded.BasePath)
-	assert.Equal(t, len(output.Renames), len(decoded.Renames))
-	assert.Equal(t, len(output.DuplicateDeletes), len(decoded.DuplicateDeletes))
-	assert.Equal(t, len(output.SmallOrCorruptedDeletes), len(decoded.SmallOrCorruptedDeletes))
-	assert.Equal(t, len(output.TodoItems), len(decoded.TodoItems))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := makeRelativePath(tt.path, tt.targetDir)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
 }

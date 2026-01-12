@@ -78,12 +78,40 @@ pub struct Args {
     )]
     pub preserve_unicode: bool,
 
-    /// Fetch arXiv metadata (placeholder for future implementation)
+    /// Fetch arXiv metadata via API
     #[arg(
         long,
-        help = "Fetch arXiv metadata via API (not implemented yet)"
+        help = "Fetch arXiv metadata via API for files matching arXiv ID patterns"
     )]
     pub fetch_arxiv: bool,
+
+    /// Extract metadata from EPUB/PDF files
+    #[arg(
+        long,
+        help = "Extract metadata (title, author, year) from EPUB/PDF internal structures"
+    )]
+    pub extract_metadata: bool,
+
+    /// Interactive mode - confirm each rename
+    #[arg(
+        long,
+        help = "Interactive mode: confirm each rename operation before executing"
+    )]
+    pub interactive: bool,
+
+    /// Batch interactive mode - preview all, then confirm
+    #[arg(
+        long,
+        help = "Batch interactive mode: preview all operations, then confirm or select which to execute"
+    )]
+    pub batch_interactive: bool,
+
+    /// Non-interactive mode (override config)
+    #[arg(
+        long,
+        help = "Skip interactive mode even if enabled in config"
+    )]
+    pub non_interactive: bool,
 
     /// Verbose output
     #[arg(long, short = 'v', help = "Enable verbose logging")]
@@ -110,6 +138,17 @@ pub struct Args {
     )]
     pub json: bool,
 
+    /// Output results in CSV format
+    #[arg(
+        long,
+        help = "Output operations in CSV format instead of human-readable text"
+    )]
+    pub csv: bool,
+
+    /// Run with TUI interface
+    #[arg(long, help = "Run with terminal UI interface")]
+    pub tui: bool,
+
     /// Skip MD5 hash computation (for cloud storage to avoid downloading files)
     #[arg(
         long,
@@ -131,6 +170,22 @@ pub struct Args {
         help = "Write JSON undo log to specified path (enables reverting rename operations)"
     )]
     pub undo_log: Option<PathBuf>,
+
+    /// Create backup before making changes
+    #[arg(
+        long,
+        value_name = "PATH",
+        help = "Create backups of files before renaming/deleting to specified directory"
+    )]
+    pub backup_dir: Option<PathBuf>,
+
+    /// Generate shell script to undo changes
+    #[arg(
+        long,
+        value_name = "PATH",
+        help = "Generate a shell script to undo all renames (outputs to specified path)"
+    )]
+    pub undo_script: Option<PathBuf>,
 }
 
 impl Args {
@@ -171,9 +226,17 @@ mod tests {
             delete_small: false,
             clean_failed: false,
             json: false,
+            csv: false,
+            tui: false,
             skip_cloud_hash: false,
             cleanup_downloads: false,
             undo_log: None,
+            extract_metadata: false,
+            interactive: false,
+            batch_interactive: false,
+            non_interactive: false,
+            backup_dir: None,
+            undo_script: None,
         };
 
         let exts = args.get_extensions();
@@ -200,9 +263,17 @@ mod tests {
             delete_small: false,
             clean_failed: false,
             json: false,
+            csv: false,
+            tui: false,
             skip_cloud_hash: false,
             cleanup_downloads: false,
             undo_log: None,
+            extract_metadata: false,
+            interactive: false,
+            batch_interactive: false,
+            non_interactive: false,
+            backup_dir: None,
+            undo_script: None,
         };
 
         let exts = args.get_extensions();
@@ -228,9 +299,17 @@ mod tests {
             delete_small: false,
             clean_failed: false,
             json: false,
+            csv: false,
+            tui: false,
             skip_cloud_hash: false,
             cleanup_downloads: false,
             undo_log: None,
+            extract_metadata: false,
+            interactive: false,
+            batch_interactive: false,
+            non_interactive: false,
+            backup_dir: None,
+            undo_script: None,
         };
 
         let exts = args.get_extensions();

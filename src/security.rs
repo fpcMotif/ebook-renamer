@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::path::{Path, PathBuf, Component};
 use std::fs;
 use anyhow::{anyhow, Result};
@@ -112,12 +114,29 @@ pub fn shell_escape(arg: &str) -> String {
     for ch in arg.chars() {
         if ch == '\'' {
             escaped.push_str("'\\''");
+        } else if ch == '\n' {
+            escaped.push_str("\\n");
+        } else if ch == '\r' {
+            escaped.push_str("\\r");
+        } else if ch == '\t' {
+            escaped.push_str("\\t");
         } else {
             escaped.push(ch);
         }
     }
     escaped.push('\'');
     escaped
+}
+
+pub fn shell_escape_safe(arg: &str) -> String {
+    if arg.is_empty() {
+        return String::from("''");
+    }
+    let safe = Regex::new(r"^[a-zA-Z0-9_./-]+$").unwrap();
+    if safe.is_match(arg) {
+        return arg.to_string();
+    }
+    shell_escape(arg)
 }
 
 pub fn validate_extensions(extensions: &[String]) -> Result<()> {

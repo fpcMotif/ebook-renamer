@@ -20,7 +20,10 @@ use std::{
 };
 
 use crate::cli::Args;
-use crate::{duplicates, normalizer, scanner, todo, download_recovery};
+use crate::config::Config;
+use crate::json_output;
+use crate::metadata::{ArxivClient, MetadataExtractor};
+use crate::{download_recovery, duplicates, normalizer, scanner, todo};
 
 #[derive(Debug, Clone)]
 pub enum AppEvent {
@@ -28,6 +31,11 @@ pub enum AppEvent {
     NormalizeComplete(Vec<crate::scanner::FileInfo>),
     CheckComplete,
     DuplicatesComplete(Vec<Vec<std::path::PathBuf>>),
+    RecoveryComplete { extracted: usize, errors: usize },
+    MetadataExtracted(usize),
+    ArxivFetched(usize),
+    FilesDeleted(usize),
+    UndoLogWritten(String),
     Error(String),
     Done,
 }
@@ -116,6 +124,21 @@ pub fn run(args: Args) -> Result<()> {
                         app.progress = 0.8;
                         app.state = "Executing...".to_string();
                     }
+                    AppEvent::RecoveryComplete { extracted, errors } => {
+                        app.logs.push(format!("Recovery: {} extracted, {} errors", extracted, errors));
+                    }
+                    AppEvent::MetadataExtracted(count) => {
+                        app.logs.push(format!("Extracted metadata from {} files", count));
+                    }
+                    AppEvent::ArxivFetched(count) => {
+                        app.logs.push(format!("Fetched arXiv metadata for {} files", count));
+                    }
+                    AppEvent::FilesDeleted(count) => {
+                        app.logs.push(format!("Deleted {} small/failed files", count));
+                    }
+                    AppEvent::UndoLogWritten(path) => {
+                        app.logs.push(format!("Undo log written to {}", path));
+                    }
                     AppEvent::Error(msg) => {
                         app.logs.push(format!("Error: {}", msg));
                         app.state = "Error".to_string();
@@ -149,55 +172,179 @@ pub fn run(args: Args) -> Result<()> {
 }
 
 fn run_process(mut args: Args, tx: mpsc::Sender<AppEvent>) -> Result<()> {
+    // Load config file
+    let config = Config::load().unwrap_or_default();
+
+    // Apply config defaults if CLI args not set
+    if !args.dry_run && config.dry_run_default() {
+        args.dry_run = true;
+    }
+
     // Auto-detect cloud storage and enable skip_cloud_hash if not explicitly set
     if !args.skip_cloud_hash {
         if let Some(provider) = crate::cloud::is_cloud_storage_path(&args.path) {
             args.skip_cloud_hash = true;
-            // Send log message about cloud mode
             let msg = format!("⚠️  Detected {} - using metadata-only mode", provider.name());
             tx.send(AppEvent::Error(msg))?;
         }
     }
 
-    // 1. Recovery
-    let recovery = download_recovery::DownloadRecovery::new(&args.path, args.cleanup_downloads);
-    let _ = recovery.recover_downloads(); // Ignore errors for now or log them
+    // Initialize arXiv client if needed
+    let arxiv_client = if args.fetch_arxiv || config.fetch_arxiv() {
+        Some(ArxivClient::new()?)
+    } else {
+        None
+    };
 
-    // 2. Scan
+    // Step 1: Recover downloads from .download/.crdownload folders
+    let recovery = download_recovery::DownloadRecovery::new(&args.path, args.cleanup_downloads);
+    let recovery_result = recovery.recover_downloads()?;
+    tx.send(AppEvent::RecoveryComplete {
+        extracted: recovery_result.extracted_files.len(),
+        errors: recovery_result.errors.len(),
+    })?;
+
+    // Step 2: Scan
     let effective_max_depth = if args.no_recursive { 1 } else { args.max_depth };
     let mut scanner = scanner::Scanner::new(&args.path, effective_max_depth)?;
-    let files = scanner.scan()?;
+    let mut files = scanner.scan()?;
     tx.send(AppEvent::ScanComplete(files.clone()))?;
 
-    // 3. Normalize
+    // Step 3: Extract metadata from files if enabled
+    if args.extract_metadata || config.extract_metadata() {
+        let mut metadata_count = 0;
+        for file_info in &mut files {
+            if let Ok(metadata) = MetadataExtractor::extract_from_file(&file_info.original_path) {
+                if !metadata.is_empty() {
+                    metadata_count += 1;
+                }
+            }
+        }
+        if metadata_count > 0 {
+            tx.send(AppEvent::MetadataExtracted(metadata_count))?;
+        }
+    }
+
+    // Step 4: Fetch arXiv metadata if enabled
+    if let Some(ref client) = arxiv_client {
+        let mut arxiv_count = 0;
+        for file_info in &mut files {
+            if let Some(arxiv_id) = ArxivClient::detect_arxiv_id(&file_info.original_name) {
+                if let Ok(Some(_metadata)) = client.fetch_metadata(&arxiv_id) {
+                    arxiv_count += 1;
+                }
+            }
+        }
+        if arxiv_count > 0 {
+            tx.send(AppEvent::ArxivFetched(arxiv_count))?;
+        }
+    }
+
+    // Step 5: Parse and normalize filenames
     let normalized = normalizer::normalize_files(files)?;
     tx.send(AppEvent::NormalizeComplete(normalized.clone()))?;
 
-    // 4. Todo / Check
+    // Step 6: Handle failed downloads and small files
     let mut todo_list = todo::TodoList::new(&args.todo_file, &args.path)?;
-    // ... (Simplified logic for TUI demo, ideally copy full logic)
+    let mut files_to_delete = Vec::new();
+    let mut todo_items: Vec<(String, String, String)> = Vec::new();
+
     for file_info in &normalized {
-        if !file_info.is_failed_download && !file_info.is_too_small {
-             todo_list.analyze_file_integrity(file_info)?;
+        if file_info.is_failed_download || file_info.is_too_small {
+            if args.delete_small {
+                files_to_delete.push(file_info.original_path.clone());
+                todo_list.remove_file_from_todo(&file_info.original_name);
+            } else if args.clean_failed {
+                todo_list.add_failed_download(file_info)?;
+                files_to_delete.push(file_info.original_path.clone());
+
+                let category = if file_info.is_failed_download {
+                    "failed_download"
+                } else {
+                    "too_small"
+                };
+                let message = if file_info.is_failed_download {
+                    format!("Redownload: {} (Unfinished download)", file_info.original_name)
+                } else {
+                    format!(
+                        "Check and redownload: {} (File too small, only {} bytes)",
+                        file_info.original_name, file_info.size
+                    )
+                };
+                todo_items.push((
+                    category.to_string(),
+                    file_info.original_name.clone(),
+                    message,
+                ));
+            } else {
+                todo_list.add_failed_download(file_info)?;
+                let category = if file_info.is_failed_download {
+                    "failed_download"
+                } else {
+                    "too_small"
+                };
+                let message = if file_info.is_failed_download {
+                    format!("Redownload: {} (Unfinished download)", file_info.original_name)
+                } else {
+                    format!(
+                        "Check and redownload: {} (File too small, only {} bytes)",
+                        file_info.original_name, file_info.size
+                    )
+                };
+                todo_items.push((
+                    category.to_string(),
+                    file_info.original_name.clone(),
+                    message,
+                ));
+            }
+        } else {
+            todo_list.analyze_file_integrity(file_info)?;
         }
     }
     tx.send(AppEvent::CheckComplete)?;
 
-    // 5. Duplicates
-    let (duplicate_groups, mut clean_files, _hash_errors) = duplicates::detect_duplicates(normalized, args.skip_cloud_hash)?;
-    // We could report hash_errors in the TUI logs, but for now we just ignore them in the TUI view
-    // (they will be in todo.md when written)
+    // Step 7: Detect duplicates
+    let (duplicate_groups, mut clean_files, hash_errors) =
+        duplicates::detect_duplicates(normalized, args.skip_cloud_hash)?;
+
+    // Process hash errors
+    for (file_info, error) in &hash_errors {
+        let _ = tx.send(AppEvent::Error(format!(
+            "Hash error for {}: {}",
+            file_info.original_name, error
+        )));
+        todo_list.add_file_issue(file_info, todo::FileIssue::ReadError(error.clone()))?;
+        todo_items.push((
+            "read_error".to_string(),
+            file_info.original_name.clone(),
+            format!(
+                "Check file permission: {} (Read error: {})",
+                file_info.original_name, error
+            ),
+        ));
+    }
     tx.send(AppEvent::DuplicatesComplete(duplicate_groups.clone()))?;
 
-    // 5.5. Resolve rename collisions BEFORE executing
-    // CRITICAL: This prevents data loss from overwriting files with same target name
+    // Step 8: Resolve rename collisions BEFORE executing
     crate::renamer::resolve_rename_collisions(&mut clean_files)?;
 
-    // 6. Execute
-    if !args.dry_run {
-        // Execute renames using the cycle-safe renamer (handles A->B, B->A cases)
-        // CRITICAL: Do NOT use raw fs::rename - it doesn't handle cycles or collisions
+    // Step 9: Execute or dry-run
+    if args.dry_run {
+        // In TUI mode during dry-run, we still write the todo list
+        todo_list.write()?;
+    } else {
+        // Initialize undo log
+        let mut undo_log = json_output::UndoLog::new(&args.path, false);
+
+        // Execute renames (cycle-safe)
         crate::renamer::execute_renames(&clean_files)?;
+
+        // Log renames to undo log
+        for file_info in &clean_files {
+            if file_info.new_name.is_some() && file_info.original_path != file_info.new_path {
+                undo_log.add_rename(&file_info.original_path, &file_info.new_path);
+            }
+        }
 
         // Delete duplicates
         if !args.no_delete {
@@ -205,16 +352,37 @@ fn run_process(mut args: Args, tx: mpsc::Sender<AppEvent>) -> Result<()> {
                 if group.len() > 1 {
                     for (idx, path) in group.iter().enumerate() {
                         if idx > 0 {
+                            let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
                             std::fs::remove_file(path)?;
+                            undo_log.add_deleted_duplicate(path, size, None);
                         }
                     }
                 }
             }
         }
+
+        // Delete small/corrupted/failed files if requested
+        if (args.delete_small || args.clean_failed) && !files_to_delete.is_empty() {
+            let delete_count = files_to_delete.len();
+            for path in &files_to_delete {
+                let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+                std::fs::remove_file(path)?;
+                undo_log.add_deleted_small(path, size);
+            }
+            tx.send(AppEvent::FilesDeleted(delete_count))?;
+        }
+
+        // Write undo log if path specified
+        if let Some(ref undo_log_path) = args.undo_log {
+            undo_log.write_to_file(undo_log_path)?;
+            tx.send(AppEvent::UndoLogWritten(
+                undo_log_path.display().to_string(),
+            ))?;
+        }
+
+        // Write todo.md
+        todo_list.write()?;
     }
-    
-    // Write todo
-    todo_list.write()?;
 
     tx.send(AppEvent::Done)?;
     Ok(())

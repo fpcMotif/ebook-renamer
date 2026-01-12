@@ -310,6 +310,38 @@ impl OperationsOutput {
     pub fn to_json(&self) -> Result<String> {
         Ok(serde_json::to_string_pretty(self)?)
     }
+
+    pub fn to_csv(&self) -> Result<String> {
+        let mut wtr = csv::Writer::from_writer(vec![]);
+
+        // Write header
+        wtr.write_record(&["type", "from", "to", "reason"])?;
+
+        // Write renames
+        for rename in &self.renames {
+            wtr.write_record(&["rename", &rename.from, &rename.to, &rename.reason])?;
+        }
+
+        // Write duplicate deletes
+        for dup in &self.duplicate_deletes {
+            for deleted in &dup.delete {
+                wtr.write_record(&["duplicate_delete", deleted, &dup.keep, "duplicate"])?;
+            }
+        }
+
+        // Write small/corrupted deletes
+        for del in &self.small_or_corrupted_deletes {
+            wtr.write_record(&["small_delete", &del.path, "", &del.issue])?;
+        }
+
+        // Write todo items
+        for todo in &self.todo_items {
+            wtr.write_record(&["todo", &todo.file, "", &format!("{}: {}", todo.category, todo.message)])?;
+        }
+
+        let data = String::from_utf8(wtr.into_inner()?)?;
+        Ok(data)
+    }
 }
 
 #[cfg(test)]

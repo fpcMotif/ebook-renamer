@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "qmd": {
+      "command": "/Users/f/.bun/bin/bun",
+      "args": ["/Users/f/.bun/install/global/node_modules/qmd/src/qmd.ts", "mcp"],
+      "cwd": "/Users/f/.bun/install/global/node_modules/qmd"
+    }
+  }
+}

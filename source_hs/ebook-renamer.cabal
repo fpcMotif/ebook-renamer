@@ -12,6 +12,12 @@ executable ebook-renamer
   main-is: Main.hs
   other-modules:
       Paths_ebook_renamer
+    , Options
+    , Scanner
+    , Normalizer
+    , Actions
+    , Duplicates
+    , Todo
   hs-source-dirs:
       app
   ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
@@ -20,4 +26,14 @@ executable ebook-renamer
     , time
     , directory
     , filepath
+    , optparse-applicative
+    , text
+    , regex-tdfa
+    , bytestring
+    , cryptonite
+    , memory
+    , aeson
+    , containers
+    , unordered-containers
+    , mtl
   default-language: Haskell2010
